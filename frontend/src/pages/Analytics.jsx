@@ -287,8 +287,8 @@ export default function Analytics() {
       return FALLBACK;
     }
     
-    let min = drillStats.min;
-    let max = drillStats.max;
+    const min = drillStats.min;
+    const max = drillStats.max;
     
     // If range is zero (single value or all identical), pad it so we have a valid axis
     // Recharts can fail if domain is [10, 10] -> range 0 -> division by zero

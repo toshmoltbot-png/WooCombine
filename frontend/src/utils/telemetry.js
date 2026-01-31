@@ -21,8 +21,8 @@
  */
 export const logEvent = (event, data = {}) => {
   try {
-    // Development logging
-    if (process.env.NODE_ENV === 'development') {
+    // Development logging (Vite uses import.meta.env)
+    if (import.meta.env.DEV) {
       console.log(`[Telemetry] ${event}`, data);
     }
     
@@ -37,7 +37,7 @@ export const logEvent = (event, data = {}) => {
     }
   } catch (error) {
     // Fail silently - telemetry should never break the app
-    if (process.env.NODE_ENV === 'development') {
+    if (import.meta.env.DEV) {
       console.warn('[Telemetry] Failed to log event:', error);
     }
   }
@@ -79,10 +79,12 @@ export const logUserAction = (action, data = {}) => {
 export const logError = (errorContext, error, data = {}) => {
   try {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : undefined;
+    // errorStack available for future use (e.g., sending to Sentry)
+    const _errorStack = error instanceof Error ? error.stack : undefined;
+    void _errorStack; // Silence unused var warning
     
-    // Console error in development
-    if (process.env.NODE_ENV === 'development') {
+    // Console error in development (Vite uses import.meta.env)
+    if (import.meta.env.DEV) {
       console.error(`[Error] ${errorContext}:`, errorMessage, data);
     }
     

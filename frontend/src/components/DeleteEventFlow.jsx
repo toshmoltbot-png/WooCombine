@@ -81,13 +81,12 @@ export default function DeleteEventFlow({ event, isCurrentlySelected, onSuccess 
     }
   }, [deleteEventAvailable, deleteEvent, targetEvent]);
 
-  // Permission check
-  if (userRole !== 'organizer') {
-    return null; // Should never happen - backend also enforces
-  }
-
   // Fetch event stats when component mounts
+  // NOTE: This hook must stay here (before any early returns) to comply with Rules of Hooks
   useEffect(() => {
+    // Skip fetch if user isn't organizer (but hook still runs)
+    if (userRole !== 'organizer') return;
+    
     const fetchStats = async () => {
       if (!targetEvent?.id || !selectedLeagueId) return;
       
@@ -104,7 +103,12 @@ export default function DeleteEventFlow({ event, isCurrentlySelected, onSuccess 
     };
 
     fetchStats();
-  }, [targetEvent, selectedLeagueId]);
+  }, [targetEvent, selectedLeagueId, userRole]);
+
+  // Permission check - must come AFTER all hooks
+  if (userRole !== 'organizer') {
+    return null; // Should never happen - backend also enforces
+  }
 
   // Check if typed name matches (case-insensitive)
   const isNameMatch = typedName.trim().toLowerCase() === targetEvent?.name?.toLowerCase();

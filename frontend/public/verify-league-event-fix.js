@@ -38,7 +38,7 @@
       };
       
       console.log('✅ selectedEvent exists in localStorage');
-      console.log('   league_id present:', !!eventObj.league_id ? '✅' : '❌');
+      console.log('   league_id present:', eventObj.league_id ? '✅' : '❌');
       console.log('   Event data:', results.frontend.eventData);
     } else {
       results.frontend.hasSelectedEvent = false;

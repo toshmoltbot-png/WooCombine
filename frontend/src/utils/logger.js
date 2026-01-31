@@ -20,7 +20,7 @@ const getCurrentLogLevel = () => {
   }
   // Vite runtime (guarded)
   try {
-    // eslint-disable-next-line no-new-func
+     
     const env = new Function('try { return import.meta && import.meta.env } catch (e) { return {} }')();
     if (env && env.PROD) return LOG_LEVELS.ERROR;
     if (env && env.VITE_LOG_LEVEL) return LOG_LEVELS[env.VITE_LOG_LEVEL] || LOG_LEVELS.INFO;

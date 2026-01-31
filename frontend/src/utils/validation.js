@@ -45,7 +45,7 @@ export function validatePlayerName(name) {
   }
   
   // Allow letters, spaces, hyphens, apostrophes, and periods
-  const nameRegex = /^[a-zA-ZÀ-ÿ\s\-'\.]+$/;
+  const nameRegex = /^[a-zA-ZÀ-ÿ\s\-'.]+$/;
   if (!nameRegex.test(trimmedName)) {
     throw new Error('Player name contains invalid characters');
   }
@@ -78,7 +78,7 @@ export function validatePassword(password) {
  * @throws {Error} - If age group is invalid
  */
 export function validateAgeGroup(ageGroup) {
-  if (ageGroup == null) return '';
+  if (ageGroup === null || ageGroup === undefined) return '';
   if (typeof ageGroup !== 'string') return String(ageGroup);
   // Accept any string (including blank) to support arbitrary league labels
   return ageGroup.trim();
