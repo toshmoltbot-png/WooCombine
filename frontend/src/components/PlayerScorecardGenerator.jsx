@@ -132,7 +132,7 @@ const PlayerScorecardGenerator = ({ player, allPlayers = [], weights = {}, selec
     printWindow.document.close();
     // Ensure styles are applied before printing
     const handleLoad = () => {
-      try { printWindow.focus(); printWindow.print(); } catch {}
+      try { printWindow.focus(); printWindow.print(); } catch { /* Print focus may fail in some browsers */ }
     };
     if (printWindow.document.readyState === 'complete') {
       handleLoad();
