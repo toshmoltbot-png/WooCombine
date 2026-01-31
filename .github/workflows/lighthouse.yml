@@ -1,11 +1,12 @@
 name: Lighthouse CI
 
+# DISABLED scheduled runs: Re-enable when production URLs are verified
 on:
-  push:
-    branches: [ main ]
+  # push:
+  #   branches: [ main ]
   workflow_dispatch:
-  schedule:
-    - cron: '0 6 * * *'
+  # schedule:
+  #   - cron: '0 6 * * *'
 
 jobs:
   lhci:

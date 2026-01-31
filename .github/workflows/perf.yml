@@ -1,9 +1,11 @@
 name: Performance (k6)
 
+# DISABLED: Requires STAGING_BASE_URL and STAGING_BEARER_TOKEN secrets
+# Re-enable when staging environment is configured
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 6 * * *'
+  # schedule:
+  #   - cron: '0 6 * * *'
 
 jobs:
   k6:
