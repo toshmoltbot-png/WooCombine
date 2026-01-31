@@ -35,36 +35,8 @@ export default function OnboardingEvent() {
   const { user, userRole, leagues, selectedLeagueId } = useAuth();
   const { notifyPlayerAdded, notifyPlayersUploaded, notifyError, showSuccess, showError, showInfo } = useToast();
   
-  // Enhanced auth check with loading state
-  if (!user) {
-    return <LoadingScreen title="Checking authentication..." subtitle="Please wait while we verify your access" size="large" />;
-  }
-  
-  if (!userRole) {
-    return <LoadingScreen title="Loading your role..." subtitle="Setting up your account permissions" size="large" />;
-  }
-  
-  // Redirect non-organizers safely via effect to avoid hook order issues
-  useEffect(() => {
-    if (userRole && userRole !== 'organizer') {
-      navigate('/dashboard');
-    }
-  }, [userRole, navigate]);
-  if (userRole !== 'organizer') {
-    return <LoadingScreen title="Redirecting..." subtitle="Taking you to your dashboard" size="medium" />;
-  }
-
-  const organizerMissingLeague = userRole === 'organizer' && (!selectedLeagueId || selectedLeagueId.trim() === '');
-  if (organizerMissingLeague) {
-    const hasExistingLeagues = Array.isArray(leagues) && leagues.length > 0;
-    return (
-      <LoadingScreen
-        title={hasExistingLeagues ? "Choose a league to continue" : "Create your league to continue"}
-        subtitle={hasExistingLeagues ? "Redirecting you to your league list" : "Redirecting you to the Create League step"}
-        size="large"
-      />
-    );
-  }
+  // ALL HOOKS MUST BE DECLARED BEFORE ANY CONDITIONAL RETURNS
+  // (React Rules of Hooks: hooks must be called in the same order every render)
   
   // Multi-step wizard state
   const [currentStep, setCurrentStep] = useState(1);
@@ -177,6 +149,39 @@ export default function OnboardingEvent() {
       fetchEventData();
     }
   }, [createdEvent, fetchEventData]);
+
+  // NON-ORGANIZER REDIRECT: Must be AFTER all hooks are declared
+  useEffect(() => {
+    if (userRole && userRole !== 'organizer') {
+      navigate('/dashboard');
+    }
+  }, [userRole, navigate]);
+
+  // CONDITIONAL RETURNS: Must come AFTER all hooks
+  // Early return for auth loading states
+  if (!user) {
+    return <LoadingScreen title="Checking authentication..." subtitle="Please wait while we verify your access" size="large" />;
+  }
+  
+  if (!userRole) {
+    return <LoadingScreen title="Loading your role..." subtitle="Setting up your account permissions" size="large" />;
+  }
+  
+  if (userRole !== 'organizer') {
+    return <LoadingScreen title="Redirecting..." subtitle="Taking you to your dashboard" size="medium" />;
+  }
+
+  const organizerMissingLeague = userRole === 'organizer' && (!selectedLeagueId || selectedLeagueId.trim() === '');
+  if (organizerMissingLeague) {
+    const hasExistingLeagues = Array.isArray(leagues) && leagues.length > 0;
+    return (
+      <LoadingScreen
+        title={hasExistingLeagues ? "Choose a league to continue" : "Create your league to continue"}
+        subtitle={hasExistingLeagues ? "Redirecting you to your league list" : "Redirecting you to the Create League step"}
+        size="large"
+      />
+    );
+  }
 
   // Auto-advance REMOVED to prevent skipping the Sport Selection step.
   // Users will see the "Continue" button in Step 1 if an event is already selected.
