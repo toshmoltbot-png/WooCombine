@@ -11,7 +11,7 @@ This prevents:
 """
 
 import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import logging
 import uuid
@@ -76,7 +76,7 @@ def generate_delete_intent_token(user_id: str, league_id: str, target_event_id: 
     if not SECRET_KEY:
         raise RuntimeError("DELETE_TOKEN_SECRET_KEY not configured. Cannot generate tokens.")
     
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     expiry = now + timedelta(minutes=TOKEN_EXPIRY_MINUTES)
     
     # Generate unique jti (JWT ID) for one-time-use tracking
@@ -181,7 +181,7 @@ def validate_delete_intent_token(
         
         # Mark token as used if requested (prevents replay)
         if mark_as_used:
-            token_record["used_at"] = datetime.utcnow()
+            token_record["used_at"] = datetime.now(timezone.utc)
             logging.info(f"[DELETE_TOKEN] Token marked as used (jti: {jti}) - Replay now blocked")
         
         logging.info(f"[DELETE_TOKEN] Valid one-time token (jti: {jti}) for user {expected_user_id}, event {expected_target_event_id}")
@@ -204,7 +204,7 @@ def cleanup_expired_tokens():
     Remove expired tokens from usage store to prevent memory leak.
     Should be called periodically (e.g., via background task).
     """
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     expired_jtis = [
         jti for jti, record in _token_usage_store.items()
         if record["expires_at"] < now

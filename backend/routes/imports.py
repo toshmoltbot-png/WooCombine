@@ -8,7 +8,7 @@ from ..auth import get_current_user
 from ..middleware.rate_limiting import write_rate_limit, bulk_rate_limit
 from ..firestore_client import db
 from ..utils.identity import generate_player_id
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import csv
 import io
@@ -127,7 +127,7 @@ async def import_players(
         error_count = 0
         errors = []
         player_ids = []
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         batch = db.batch()
         batch_count = 0

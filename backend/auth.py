@@ -7,7 +7,7 @@ from typing import Optional, Dict
 import os
 import json
 from google.cloud import firestore
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import asyncio
 from functools import wraps, lru_cache
@@ -234,7 +234,7 @@ def get_current_user(
                 user_data = {
                     "id": uid,
                     "email": email,
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                     # Don't set role yet - this will be done in SelectRole
                 }
                 
@@ -378,7 +378,7 @@ def get_current_user_for_role_setting(
                 user_data = {
                     "id": uid,
                     "email": email,
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                     # Don't set role yet - this will be done by the role endpoint
                 }
                 db.collection("users").document(uid).set(user_data)

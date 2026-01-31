@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from ..auth import get_current_user, require_role
 from ..middleware.rate_limiting import write_rate_limit
 from ..firestore_client import db
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 router = APIRouter()
@@ -96,7 +96,7 @@ async def run_migration(migration_id: str, user=Depends(get_current_user)):
             )
         
         affected = 0
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         # Run migration based on ID
         if migration_id == 'v1_add_composite_score':

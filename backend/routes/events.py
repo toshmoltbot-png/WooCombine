@@ -4,7 +4,7 @@ from typing import Optional, List
 from ..firestore_client import db
 from ..auth import get_current_user, require_role
 from ..middleware.rate_limiting import read_rate_limit, write_rate_limit
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from ..utils.database import execute_with_timeout
 from ..utils.data_integrity import (
@@ -138,7 +138,7 @@ def create_event(
             "league_id": league_id,  # Add league_id reference
             "drillTemplate": drill_template,
             "disabled_drills": disabled_drills,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "live_entry_active": False,
         }
         
@@ -279,7 +279,7 @@ def update_event(
             "date": date,
             "location": location or "",
             "notes": notes or "",
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         
         # Add drillTemplate if provided and valid
@@ -604,7 +604,7 @@ def delete_event(
             )
         
         # SOFT DELETE: Mark as deleted instead of hard-deleting
-        deletion_timestamp = datetime.utcnow().isoformat()
+        deletion_timestamp = datetime.now(timezone.utc).isoformat()
         soft_delete_data = {
             "deleted_at": deletion_timestamp,
             "deleted_by": current_user["uid"],
@@ -705,7 +705,7 @@ def set_combine_lock_status(
         # Update lock status
         update_data = {
             "isLocked": new_lock_status,
-            "lock_updated_at": datetime.utcnow().isoformat(),
+            "lock_updated_at": datetime.now(timezone.utc).isoformat(),
             "lock_updated_by": current_user["uid"]
         }
         
@@ -821,7 +821,7 @@ def create_custom_drill(
         drill_data.update({
             "id": new_drill_ref.id,
             "event_id": event_id,
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "created_by": current_user["uid"]
         })
         

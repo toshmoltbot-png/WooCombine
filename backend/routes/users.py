@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 import time
 from firebase_admin import auth
@@ -146,7 +146,7 @@ async def set_user_role(
                         "id": uid,
                         "email": email,
                         "role": role,
-                        "created_at": datetime.utcnow().isoformat()
+                        "created_at": datetime.now(timezone.utc).isoformat()
                     }
                     user_doc_ref.set(user_data)
                     logging.info(f"✅ Created new user document for {uid} with role: {role}")
@@ -207,13 +207,13 @@ async def store_pending_invite(
             "id": uid,
             "email": email,
             "pending_invite": invite,
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }
         
         # If doc doesn't exist, we should set created_at too
         doc_snap = user_doc_ref.get()
         if not doc_snap.exists:
-            user_data["created_at"] = datetime.utcnow().isoformat()
+            user_data["created_at"] = datetime.now(timezone.utc).isoformat()
         
         user_doc_ref.set(user_data, merge=True)
         
@@ -267,7 +267,7 @@ async def debug_set_user_role(
             logging.info(f"[DEBUG-ROLE] Connectivity test passed")
             
             # Try to create a simple test document
-            test_data = {"test": "value", "timestamp": datetime.utcnow().isoformat()}
+            test_data = {"test": "value", "timestamp": datetime.now(timezone.utc).isoformat()}
             db.collection("_debug").document(f"test_{uid}").set(test_data)
             logging.info(f"[DEBUG-ROLE] Test document created successfully")
             
@@ -368,7 +368,7 @@ async def set_user_role_simple(
                 "id": uid,
                 "email": email,
                 "role": role,
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "auth_method": "simple_role_setting"  # Track how this was set
             }
             

@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from ..auth import get_current_user, require_role
 from ..middleware.rate_limiting import read_rate_limit, write_rate_limit
 from ..firestore_client import db
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import secrets
 import string
@@ -71,7 +71,7 @@ async def create_evaluator(
     """Create a new evaluator for an event."""
     try:
         access_code = generate_access_code()
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         evaluator_data = {
             'name': evaluator.name,

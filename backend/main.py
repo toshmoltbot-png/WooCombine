@@ -30,7 +30,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response, JSONResponse
 from fastapi.responses import PlainTextResponse
 from google.cloud import firestore
-from datetime import datetime
+from datetime import datetime, timezone
 import asyncio
 from .utils.error_handling import StandardError, handle_standard_error
  
@@ -182,7 +182,7 @@ def health_check(request: Request):
     return {
         "status": "ok",
         "firestore": firestore_status,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 @app.get("/health")
@@ -199,14 +199,14 @@ def simple_health(request: Request):
     return {
         "status": "ok",
         "firestore": firestore_status,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 @app.get("/api/warmup")
 @health_rate_limit()
 def warmup_endpoint(request: Request):
     """Enhanced warmup endpoint with parallel operations for faster cold start recovery"""
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
     
     # PERFORMANCE OPTIMIZATION: Parallel warmup operations for maximum efficiency
     import concurrent.futures
@@ -275,7 +275,7 @@ def warmup_endpoint(request: Request):
         auth_status = future_auth.result()
         routes_status = future_routes.result()
     
-    end_time = datetime.utcnow()
+    end_time = datetime.now(timezone.utc)
     duration_ms = (end_time - start_time).total_seconds() * 1000
     
     return {

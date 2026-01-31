@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from ..auth import get_current_user
 from ..middleware.rate_limiting import read_rate_limit, write_rate_limit
 from ..firestore_client import db
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import secrets
 import string
@@ -75,7 +75,7 @@ async def create_league(league: LeagueCreate, user=Depends(get_current_user)):
     """Create a new league."""
     try:
         join_code = generate_join_code()
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         league_data = {
             'name': league.name,
@@ -155,7 +155,7 @@ async def join_league(join_code: str, user=Depends(get_current_user)):
             'league_id': league_id,
             'user_id': user['uid'],
             'role': 'coach',
-            'joined_at': datetime.utcnow().isoformat()
+            'joined_at': datetime.now(timezone.utc).isoformat()
         })
         
         return {"message": "Successfully joined league", "league_id": league_id}

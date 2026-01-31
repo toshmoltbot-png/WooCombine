@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException
@@ -13,7 +13,7 @@ REPAIR_ENABLED = True
 
 
 def _utc_now() -> str:
-    return datetime.utcnow().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def ensure_league_document(league_id: str):
