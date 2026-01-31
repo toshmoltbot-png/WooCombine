@@ -56,7 +56,8 @@ export default [
         { allowConstantExport: true },
       ],
       // Additional code quality rules (warnings for gradual improvement)
-      'no-console': ['warn', { allow: ['warn', 'error'] }],
+      // Allow console in development - these are useful for debugging
+      'no-console': ['warn', { allow: ['warn', 'error', 'info', 'log', 'debug'] }],
       'no-debugger': 'error',
       'prefer-const': 'warn',
       'no-var': 'warn',
