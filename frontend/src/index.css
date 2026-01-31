@@ -1,0 +1,196 @@
+@import url('./styles/tokens.css');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light dark;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background-color: var(--color-surface-subtle);
+}
+
+/* Design tokens: shared radii and shadows */
+:root {
+  --radius-card: var(--radius-lg);
+  --shadow-card: 0 20px 50px rgba(17, 24, 39, 0.12);
+}
+
+/* Component layer utilities for uniform UI */
+@layer components {
+  .wc-card {
+    background-color: var(--color-surface);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+    border: 1px solid var(--color-border);
+  }
+  .wc-overlay {
+    background-color: rgba(255, 255, 255, 0.7);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+  }
+  .wc-h1 {
+    font-size: 1.5rem; /* 24px */
+    line-height: 2rem; /* 32px */
+    font-weight: 700;
+    color: #111827; /* gray-900 */
+  }
+  .wc-h2 {
+    font-size: 1.25rem; /* 20px */
+    line-height: 1.75rem; /* 28px */
+    font-weight: 600;
+    color: #111827; /* gray-900 */
+  }
+  .wc-subtle {
+    color: #4B5563; /* gray-600 */
+  }
+}
+
+/* Custom slider styles for mobile weight controls */
+.slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.slider-thumb::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 24px;
+  width: 24px;
+  border-radius: 50%;
+  background: var(--color-success);
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.slider-thumb::-webkit-slider-thumb:hover {
+  background: color-mix(in srgb, var(--color-success) 80%, black);
+  transform: scale(1.1);
+}
+
+.slider-thumb::-moz-range-thumb {
+  height: 24px;
+  width: 24px;
+  border-radius: 50%;
+  background: var(--color-success);
+  border: 2px solid var(--color-accent);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+}
+
+.slider-thumb::-moz-range-thumb:hover {
+  background: color-mix(in srgb, var(--color-success) 80%, black);
+  transform: scale(1.1);
+}
+
+/* Ensure sliders work well on touch devices */
+.slider-thumb {
+  touch-action: manipulation;
+}
+
+/* Make buttons more touch-friendly */
+.touch-manipulation {
+  touch-action: manipulation;
+  min-height: 44px; /* iOS recommendation for touch targets */
+}
+
+/* Mobile-optimized range slider styles - ONLY apply to sliders with specific classes */
+input[type="range"].custom-slider {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Webkit browsers (Chrome, Safari, Edge) - ONLY for custom sliders */
+input[type="range"].custom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 24px;
+  width: 24px;
+  border-radius: 50%;
+  background: var(--color-success);
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  border: 2px solid white;
+  /* Enhanced touch target for mobile */
+  touch-action: manipulation;
+}
+
+/* Firefox - ONLY for custom sliders */
+input[type="range"].custom-slider::-moz-range-thumb {
+  height: 24px;
+  width: 24px;
+  border-radius: 50%;
+  background: var(--color-success);
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  border: 2px solid white;
+  /* Remove default border */
+  border: none;
+}
+
+/* Remove track styling in Firefox - ONLY for custom sliders */
+input[type="range"].custom-slider::-moz-range-track {
+  background: transparent;
+  border: none;
+}
+
+/* Focus styles for accessibility - ONLY for custom sliders */
+input[type="range"].custom-slider:focus::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.3);
+}
+
+input[type="range"].custom-slider:focus::-moz-range-thumb {
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.3);
+}
+
+/* Ensure proper touch manipulation */
+.touch-manipulation {
+  touch-action: manipulation;
+}
+
+/* Custom test slider styles - optimized for testing different slider approaches */
+.test-slider {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.test-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--color-error);
+  border-radius: 50%;
+  cursor: grab;
+  margin-top: -4px;
+  border: none;
+}
+
+.test-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: var(--color-error);
+  border: none;
+  border-radius: 50%;
+  cursor: grab;
+}
+
+.test-slider::-ms-thumb {
+  width: 16px;
+  height: 16px;
+  background: var(--color-error);
+  border: none;
+  border-radius: 50%;
+  cursor: grab;
+}

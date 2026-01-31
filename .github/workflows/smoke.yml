@@ -1,0 +1,104 @@
+name: Staging Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare artifact directory
+        run: mkdir -p docs/qa
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Prepare environment
+        env:
+          STAGING_BASE_URL: ${{ vars.STAGING_BASE_URL }}
+          STAGING_BEARER_TOKEN: ${{ secrets[vars.STAGING_BEARER_TOKEN_KEY] }}
+          STAGING_FIREBASE_API_KEY: ${{ secrets.STAGING_FIREBASE_API_KEY }}
+          STAGING_AUTH_EMAIL: ${{ secrets.STAGING_AUTH_EMAIL }}
+          STAGING_AUTH_PASSWORD: ${{ secrets.STAGING_AUTH_PASSWORD }}
+        run: |
+          echo "STAGING_BASE_URL=$STAGING_BASE_URL" >> $GITHUB_ENV
+          echo "STAGING_BEARER_TOKEN=$STAGING_BEARER_TOKEN" >> $GITHUB_ENV
+          echo "STAGING_FIREBASE_API_KEY=$STAGING_FIREBASE_API_KEY" >> $GITHUB_ENV
+          echo "STAGING_AUTH_EMAIL=$STAGING_AUTH_EMAIL" >> $GITHUB_ENV
+          # Don't echo password
+      - name: Check configuration
+        env:
+          STAGING_BASE_URL: ${{ env.STAGING_BASE_URL }}
+          STAGING_BEARER_TOKEN: ${{ env.STAGING_BEARER_TOKEN }}
+          STAGING_FIREBASE_API_KEY: ${{ env.STAGING_FIREBASE_API_KEY }}
+          STAGING_AUTH_EMAIL: ${{ env.STAGING_AUTH_EMAIL }}
+        run: |
+          if [ -z "$STAGING_BASE_URL" ]; then
+            echo "::notice::Skipping smoke test - missing STAGING_BASE_URL (configure repo variable).";
+            echo "SKIP_SMOKE=true" >> $GITHUB_ENV; exit 0; fi
+          if [ -z "$STAGING_BEARER_TOKEN" ]; then
+            if [ -n "$STAGING_FIREBASE_API_KEY" ] && [ -n "$STAGING_AUTH_EMAIL" ] && [ -n "$STAGING_AUTH_PASSWORD" ]; then
+              echo "::notice::No bearer token provided; will attempt Firebase email/password sign-in to obtain one.";
+              echo "SKIP_SMOKE=false" >> $GITHUB_ENV
+            else
+              echo "::notice::Skipping smoke test - no token and missing Firebase creds (set STAGING_FIREBASE_API_KEY, STAGING_AUTH_EMAIL, STAGING_AUTH_PASSWORD).";
+              echo "SKIP_SMOKE=true" >> $GITHUB_ENV
+            fi
+          else
+            echo "SKIP_SMOKE=false" >> $GITHUB_ENV
+          fi
+      - name: Acquire bearer token via Firebase (if needed)
+        if: env.SKIP_SMOKE != 'true' && env.STAGING_BEARER_TOKEN == ''
+        env:
+          STAGING_FIREBASE_API_KEY: ${{ env.STAGING_FIREBASE_API_KEY }}
+          STAGING_AUTH_EMAIL: ${{ env.STAGING_AUTH_EMAIL }}
+          STAGING_AUTH_PASSWORD: ${{ secrets.STAGING_AUTH_PASSWORD }}
+        run: |
+          set -e
+          echo "Signing in as $STAGING_AUTH_EMAIL via Firebase REST to obtain ID token"
+          RESP=$(curl -sS -X POST "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${STAGING_FIREBASE_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"${STAGING_AUTH_EMAIL}\",\"password\":\"${STAGING_AUTH_PASSWORD}\",\"returnSecureToken\":true}")
+          TOKEN=$(echo "$RESP" | jq -r '.idToken // empty')
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "Firebase sign-in failed: $RESP" >&2
+            exit 1
+          fi
+          echo "STAGING_BEARER_TOKEN=$TOKEN" >> $GITHUB_ENV
+      - name: Warm up staging (retry)
+        if: env.SKIP_SMOKE != 'true'
+        env:
+          STAGING_BASE_URL: ${{ env.STAGING_BASE_URL }}
+        run: |
+          set -e
+          echo "Warming up $STAGING_BASE_URL"
+          for i in 1 2 3 4 5; do
+            if curl -sSf "$STAGING_BASE_URL/api/health" >/dev/null; then
+              echo "Health OK"; break; fi
+            curl -sS "$STAGING_BASE_URL/api/warmup" || true
+            sleep $((i * 3))
+          done
+          # Final health check (non-fatal)
+          curl -sS "$STAGING_BASE_URL/health" || true
+      - name: Run smoke script
+        if: env.SKIP_SMOKE != 'true'
+        run: |
+          chmod +x scripts/qa/smoke.sh
+          ./scripts/qa/smoke.sh
+      - name: Upload smoke report
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-report
+          path: docs/qa/smoke-run-latest.md
+      - name: Commit smoke report to repo (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add docs/qa/smoke-run-latest.md
+          git commit -m "ci(smoke): update smoke run log [skip ci]" || echo "No changes to commit"
+          git push
+

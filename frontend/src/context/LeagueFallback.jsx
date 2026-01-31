@@ -1,0 +1,257 @@
+import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth, useLogout } from "../context/AuthContext";
+import { Users, Plus, QrCode, LogOut, List, Rocket } from 'lucide-react';
+import WelcomeLayout from '../components/layouts/WelcomeLayout';
+import { logger } from '../utils/logger';
+
+export default function LeagueFallback() {
+  const navigate = useNavigate();
+  const { user, userRole, leaguesLoading } = useAuth();
+  const logout = useLogout();
+  const [feedback, setFeedback] = useState("");
+  
+  if (leaguesLoading) {
+    return (
+      <WelcomeLayout
+        contentClassName="min-h-screen"
+        hideHeader={true}
+        showOverlay={false}
+      >
+        <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-8 mx-4 text-center">
+            <div className="animate-spin inline-block w-8 h-8 border-3 border-gray-300 border-t-cmf-primary rounded-full mb-4"></div>
+            <h2 className="text-xl font-bold text-gray-900 mb-2">Loading Profile...</h2>
+            <p className="text-gray-500 text-sm">Syncing your leagues and events</p>
+        </div>
+      </WelcomeLayout>
+    );
+  }
+  
+  const handleCreateLeague = async () => {
+    // GUIDED SETUP FIX: Create league first, then proceed to event creation
+    if (userRole === 'organizer') {
+      setFeedback("Starting guided setup...");
+      try {
+        logger.info('GUIDED-SETUP', 'Navigating to create-league for guided setup (league creation first)');
+        // Replace history entry to prevent accidental back to this screen
+        navigate('/create-league', { replace: true });
+      } catch (err) {
+        logger.error('GUIDED-SETUP', 'Navigation error', err);
+        setFeedback(`Navigation error: ${err.message}`);
+      }
+    } else {
+      setFeedback("Redirecting to Create League...");
+      try {
+        navigate('/create-league', { replace: true });
+      } catch (err) {
+        setFeedback(`Navigation error: ${err.message}`);
+      }
+    }
+  };
+  
+  const handleJoinLeague = () => {
+    setFeedback("Redirecting to Join League...");
+    try {
+      navigate('/join');
+          } catch {
+        setFeedback("Navigation error. Please try again.");
+        // Join navigation failed
+    }
+  };
+
+  const handleSelectLeague = () => {
+    setFeedback("Loading your leagues...");
+    try {
+      navigate('/select-league');
+          } catch {
+        setFeedback("Navigation error. Please try again.");
+        // League selection navigation failed
+    }
+  };
+
+  const handleLogout = async () => {
+    setFeedback("Logging out...");
+    try {
+      await logout();
+      navigate('/welcome');
+          } catch {
+        setFeedback("Logout error. Please refresh the page.");
+        // Logout error handled internally
+    }
+  };
+
+  return (
+    <WelcomeLayout
+      contentClassName="min-h-screen"
+      hideHeader={true}
+      showOverlay={false}
+    >
+      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl p-8 mx-4">
+        {/* Logo */}
+        <div className="text-center mb-6">
+          <img
+            src="/favicon/woocombine-logo.png"
+            alt="Woo-Combine Logo"
+            className="w-16 h-16 mx-auto mb-4"
+            style={{ objectFit: 'contain' }}
+          />
+          <div className="w-12 h-12 bg-brand-light/20 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Users className="w-6 h-6 text-brand-primary" />
+          </div>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">
+            No League Selected
+          </h1>
+          <p className="text-gray-600 text-sm leading-relaxed">
+            You need to join or create a league to access WooCombine features
+          </p>
+        </div>
+
+        {/* Feedback Message */}
+        {feedback && (
+          <div className="bg-brand-light/20 border-l-4 border-brand-primary text-brand-primary px-4 py-3 rounded mb-6 text-sm">
+            {feedback}
+          </div>
+        )}
+
+        {/* Action Options - Reordered by Role */}
+        <div className="space-y-3 mb-6">
+          {/* For Organizers: Create League First (with Wizard) */}
+          {userRole === 'organizer' && (
+            <div className="border-2 border-semantic-success/30 bg-semantic-success/10 rounded-xl p-3 hover:border-semantic-success/50 transition">
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 bg-semantic-success/20 rounded-full flex items-center justify-center flex-shrink-0">
+                  <Rocket className="w-4 h-4 text-semantic-success" />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="font-semibold text-gray-900">🚀 Start Guided Setup</h3>
+                    <span className="bg-semantic-success/20 text-semantic-success text-xs px-2 py-0.5 rounded-full font-medium">Recommended</span>
+                  </div>
+                  <p className="text-sm text-gray-600 mb-2">
+                    Create event - Import players - Share with coaches
+                  </p>
+                  <button
+                    onClick={handleCreateLeague}
+                    className="bg-semantic-success hover:bg-green-700 text-white font-semibold px-3 py-1.5 rounded-lg shadow transition-all duration-200 transform hover:scale-[1.02] flex items-center gap-2 text-sm"
+                  >
+                    <Rocket className="w-3 h-3" />
+                    Get Started
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* For Coaches: Join League First */}
+          {userRole !== 'organizer' && (
+            <div className="border-2 border-brand-primary/30 bg-brand-light/10 rounded-xl p-3 hover:border-brand-primary/50 transition">
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 bg-brand-light/20 rounded-full flex items-center justify-center flex-shrink-0">
+                  <QrCode className="w-4 h-4 text-brand-primary" />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="font-semibold text-gray-900">Join with Invite Code</h3>
+                    <span className="bg-brand-primary/20 text-brand-primary text-xs px-2 py-0.5 rounded-full font-medium">Recommended</span>
+                  </div>
+                  <p className="text-sm text-gray-600 mb-2">
+                    Ask your organizer for an invite code
+                  </p>
+                  <button
+                    onClick={handleJoinLeague}
+                    className="bg-brand-primary hover:bg-brand-secondary text-white font-semibold px-3 py-1.5 rounded-lg shadow transition-all duration-200 transform hover:scale-[1.02] flex items-center gap-2 text-sm"
+                  >
+                    <QrCode className="w-3 h-3" />
+                    Join League
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Choose Existing League Option */}
+          <div className="border border-gray-200 rounded-xl p-3 hover:border-brand-primary/30 transition">
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 bg-brand-light/20 rounded-full flex items-center justify-center flex-shrink-0">
+                <List className="w-4 h-4 text-brand-primary" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-semibold text-gray-900 mb-1">Choose from Your Leagues</h3>
+                <p className="text-sm text-gray-600 mb-2">
+                  Select from leagues you've already created or joined
+                </p>
+                <button
+                  onClick={handleSelectLeague}
+                  className="bg-brand-primary hover:bg-brand-secondary text-white font-semibold px-3 py-1.5 rounded-lg shadow transition-all duration-200 transform hover:scale-[1.02] flex items-center gap-2 text-sm"
+                >
+                  <List className="w-3 h-3" />
+                  Choose League
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Secondary Options */}
+          {userRole === 'organizer' ? (
+            <div className="border border-gray-200 rounded-xl p-3 hover:border-brand-primary/30 transition">
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 bg-brand-light/20 rounded-full flex items-center justify-center flex-shrink-0">
+                  <QrCode className="w-4 h-4 text-brand-primary" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold text-gray-900 mb-1">Join Existing League</h3>
+                  <p className="text-sm text-gray-600 mb-2">
+                    If you were invited by another organizer
+                  </p>
+                  <button
+                    onClick={handleJoinLeague}
+                    className="bg-brand-primary hover:bg-brand-secondary text-white font-semibold px-3 py-1.5 rounded-lg shadow transition-all duration-200 transform hover:scale-[1.02] flex items-center gap-2 text-sm"
+                  >
+                    <QrCode className="w-3 h-3" />
+                    Join League
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center pt-2">
+               <p className="text-sm text-gray-500">
+                 Are you an event organizer?{' '}
+                 <button 
+                   onClick={handleCreateLeague}
+                   className="text-brand-primary hover:text-brand-secondary font-semibold hover:underline"
+                 >
+                   Create a League
+                 </button>
+               </p>
+            </div>
+          )}
+        </div>
+
+        {/* User Info & Logout */}
+        <div className="border-t border-gray-200 pt-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
+                <span className="text-gray-600 font-medium text-xs">
+                  {user?.email?.charAt(0).toUpperCase() || 'U'}
+                </span>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-900">Logged in as:</p>
+                <p className="text-xs text-gray-600">{user?.email || 'Unknown'}</p>
+              </div>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1 text-semantic-error hover:text-red-700 font-medium text-xs transition"
+            >
+              <LogOut className="w-3 h-3" />
+              Log Out
+            </button>
+          </div>
+        </div>
+      </div>
+    </WelcomeLayout>
+  );
+} 

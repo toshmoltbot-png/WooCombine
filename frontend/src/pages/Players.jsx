@@ -1,0 +1,1247 @@
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import Skeleton from "../components/Skeleton";
+import DrillInputForm from "../components/DrillInputForm";
+import EditPlayerModal from "../components/Players/EditPlayerModal";
+import PlayerDetailsModal from "../components/Players/PlayerDetailsModal";
+import AddPlayerModal from "../components/Players/AddPlayerModal";
+import ImportResultsModal from "../components/Players/ImportResultsModal";
+import EventSelector from "../components/EventSelector"; // Import EventSelector
+import PlayerCard, { PlayerCardSkeleton, PlayerCardEmpty } from "../components/PlayerCard";
+
+import { useEvent } from "../context/EventContext";
+import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
+import { usePlayerDetails } from "../context/PlayerDetailsContext";
+import api from '../lib/api';
+import { X, TrendingUp, Users, BarChart3, Download, Filter, ChevronDown, ChevronRight, ArrowRight, UserPlus, Upload, FileText, ArrowLeft, Trophy, CheckCircle } from 'lucide-react';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { parseISO, isValid, format } from 'date-fns';
+import { calculateOptimizedRankingsAcrossAll } from '../utils/optimizedScoring';
+
+import { useOptimizedWeights } from '../hooks/useOptimizedWeights';
+import { useDrills } from '../hooks/useDrills';
+import { withCache, cacheInvalidation } from '../utils/dataCache';
+import WeightControls from '../components/WeightControls';
+
+// PERFORMANCE OPTIMIZATION: Cached API function with chunked fetching
+const cachedFetchPlayers = withCache(
+  async (eventId) => {
+    let allPlayers = [];
+    let page = 1;
+    const limit = 200; // Chunk size to avoid 1MB limits and timeouts
+    let hasMore = true;
+
+    console.log('[PLAYERS API] Starting paginated fetch for eventId:', eventId);
+
+    while (hasMore) {
+      const res = await api.get(`/players?event_id=${eventId}&page=${page}&limit=${limit}`);
+      const chunk = res.data || [];
+      
+      console.log(`[PLAYERS API] Page ${page}:`, {
+        chunkSize: chunk.length,
+        totalSoFar: allPlayers.length + chunk.length,
+        sampleIds: chunk.slice(0, 3).map(p => p.id)
+      });
+      
+      allPlayers = [...allPlayers, ...chunk];
+      
+      if (chunk.length < limit) {
+        hasMore = false;
+      } else {
+        page++;
+      }
+    }
+    
+    console.log('[PLAYERS API] Fetch complete:', {
+      totalPlayers: allPlayers.length,
+      eventId: eventId
+    });
+    
+    return allPlayers;
+  },
+  'players',
+  60 * 1000 // 60s cache per requirements
+);
+
+export default function Players() {
+  const { selectedEvent, setSelectedEvent } = useEvent();
+  const { user, selectedLeagueId, userRole } = useAuth();
+  const { openDetails, selectedPlayer: contextSelectedPlayer, refreshTrigger } = usePlayerDetails();
+  const [players, setPlayers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [expandedPlayerIds, setExpandedPlayerIds] = useState({});
+  // const [selectedPlayer, setSelectedPlayer] = useState(null); // Managed by PlayerDetailsContext
+  const [editingPlayer, setEditingPlayer] = useState(null);
+  const [showAddPlayerModal, setShowAddPlayerModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const navigate = useNavigate();
+  const location = useLocation();
+  
+  // PERMISSION STATE: Track coach write permissions and combine lock status
+  const [permissions, setPermissions] = useState({
+    canWrite: true, // Default to true for organizers
+    isLocked: false, // Combine lock status
+    loading: true,
+    resolved: false
+  });
+
+  // Redesign State
+  const [showRoster, setShowRoster] = useState(false);
+  const [showRankings, setShowRankings] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [drillRefreshTrigger, setDrillRefreshTrigger] = useState(0);
+  const rankingsRef = useRef(null);
+  
+  // Completion metrics for state-aware CTA
+  const totalScoresCount = useMemo(() => {
+    return players.reduce((sum, p) => sum + (p.composite_score > 0 ? 1 : 0), 0);
+  }, [players]);
+  
+  const completionRate = useMemo(() => {
+    if (players.length === 0) return 0;
+    return (totalScoresCount / players.length) * 100;
+  }, [players.length, totalScoresCount]);
+  
+  // Backend Rankings State (Fix for Analyze Rankings Widget)
+  const [backendRankings, setBackendRankings] = useState([]);
+  const [loadingRankings, setLoadingRankings] = useState(false);
+
+  // Unified Drills Hook
+  const { drills: allDrills, presets: currentPresets } = useDrills(selectedEvent);
+
+  // Handle deep linking to sections
+  useEffect(() => {
+    const urlParams = new URLSearchParams(location.search);
+    const tabParam = urlParams.get('tab');
+    const actionParam = urlParams.get('action');
+    const playerIdParam = urlParams.get('playerId');
+
+    if (tabParam === 'analyze') {
+      setShowRankings(true);
+      setShowRoster(true);
+      setTimeout(() => {
+        rankingsRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+    } else if (tabParam === 'manage') {
+      setShowRoster(true);
+    }
+
+    // MANDATORY GUARDRAIL: Import Players must always be tied to a confirmed selected event
+    // Prevent showing import modal as side-effect of deletion or navigation without explicit event context
+    if (actionParam === 'import' && selectedEvent?.id) {
+      setShowImportModal(true);
+    } else if (actionParam === 'import' && !selectedEvent?.id) {
+      // Log security violation: Attempt to access Import Players without selected event
+      console.warn('[PLAYERS_IMPORT_GUARDRAIL] Blocked import action without selected event');
+      if (window.Sentry) {
+        window.Sentry.captureMessage('Import Players accessed without selected event', {
+          level: 'warning',
+          tags: { component: 'Players', check: 'import_guardrail' }
+        });
+      }
+    }
+
+    if (playerIdParam && players.length > 0) {
+      const playerToSelect = players.find(p => p.id === playerIdParam);
+      if (playerToSelect) {
+        openDetails(playerToSelect, {
+            allPlayers: players,
+            persistedWeights,
+            sliderWeights,
+            persistSliderWeights,
+            activePreset,
+            applyPreset,
+            drills: allDrills,
+            presets: currentPresets
+        });
+      }
+    }
+  }, [location.search, players]);
+
+  // Fetch backend rankings (Schema-driven engine)
+  const fetchRankings = useCallback(async (weights, ageGroup) => {
+    if (!selectedEvent || !selectedEvent.id) return;
+    
+    setLoadingRankings(true);
+    try {
+      const params = new URLSearchParams();
+      params.append('event_id', selectedEvent.id);
+      if (ageGroup) params.append('age_group', ageGroup === 'all' ? 'ALL' : ageGroup);
+      
+      // Add weights
+      if (weights) {
+        Object.entries(weights).forEach(([key, val]) => {
+           params.append(`weight_${key}`, val);
+        });
+      }
+
+      const res = await api.get(`/rankings?${params.toString()}`);
+      setBackendRankings(res.data || []);
+    } catch (error) {
+      console.error("Failed to fetch rankings:", error);
+    } finally {
+      setLoadingRankings(false);
+    }
+  }, [selectedEvent]);
+
+  // PERMISSION FETCH: Get coach write permissions and combine lock status
+  const fetchPermissions = useCallback(async () => {
+    if (!user || !selectedLeagueId || !selectedEvent?.id) {
+      console.log('[PERMISSIONS] Skipping fetch - missing context', {
+        hasUser: !!user,
+        hasLeagueId: !!selectedLeagueId,
+        hasEventId: !!selectedEvent?.id
+      });
+      return;
+    }
+
+    try {
+      console.log('[PERMISSIONS] === STARTING PERMISSION RESOLUTION ===');
+      console.log('[PERMISSIONS] User Identity:', {
+        uid: user.uid,
+        email: user.email,
+        displayName: user.displayName
+      });
+      console.log('[PERMISSIONS] Context:', {
+        leagueId: selectedLeagueId,
+        eventId: selectedEvent.id,
+        userRole: userRole
+      });
+
+      // Organizers always have full access
+      if (userRole === 'organizer') {
+        console.log('[PERMISSIONS] ✅ User is ORGANIZER - full edit access granted');
+        setPermissions({
+          canWrite: true,
+          isLocked: false, // Organizers ignore lock
+          loading: false,
+          resolved: true
+        });
+        return;
+      }
+
+      // Fetch membership to get canWrite permission
+      let membershipCanWrite = true; // Default for backward compatibility
+      let membershipFound = false;
+      
+      try {
+        const membershipRes = await api.get(`/leagues/${selectedLeagueId}/members/${user.uid}`);
+        membershipFound = true;
+        membershipCanWrite = membershipRes.data?.canWrite !== undefined ? membershipRes.data.canWrite : true;
+        
+        console.log('[PERMISSIONS] Membership record found:', {
+          userId: user.uid,
+          canWrite: membershipCanWrite,
+          role: membershipRes.data?.role,
+          fullMembership: membershipRes.data
+        });
+      } catch (err) {
+        if (err.response?.status === 404) {
+          console.warn('[PERMISSIONS] ⚠️ NO MEMBERSHIP RECORD FOUND - falling back to read-only');
+          membershipFound = false;
+          membershipCanWrite = false; // No membership = no write access
+        } else {
+          console.error('[PERMISSIONS] Error fetching membership:', err);
+          throw err;
+        }
+      }
+
+      // Fetch event to get lock status
+      let eventIsLocked = false;
+      try {
+        const eventRes = await api.get(`/leagues/${selectedLeagueId}/events/${selectedEvent.id}`);
+        eventIsLocked = eventRes.data?.is_locked || false;
+        
+        console.log('[PERMISSIONS] Event lock status:', {
+          isLocked: eventIsLocked,
+          eventId: selectedEvent.id
+        });
+      } catch (err) {
+        console.error('[PERMISSIONS] Error fetching event lock status:', err);
+        // Don't throw - continue with unlocked assumption
+      }
+
+      // FINAL RESOLUTION LOGIC
+      let finalCanWrite = false;
+      let resolutionReason = '';
+
+      if (!membershipFound) {
+        finalCanWrite = false;
+        resolutionReason = 'NO_MEMBERSHIP_RECORD';
+      } else if (eventIsLocked && userRole === 'coach') {
+        finalCanWrite = false;
+        resolutionReason = 'COMBINE_LOCKED';
+      } else if (!membershipCanWrite) {
+        finalCanWrite = false;
+        resolutionReason = 'CANWRITE_FALSE';
+      } else {
+        finalCanWrite = true;
+        resolutionReason = 'GRANTED';
+      }
+
+      console.log('[PERMISSIONS] === FINAL RESOLUTION ===');
+      console.log('[PERMISSIONS] Decision:', {
+        finalCanWrite,
+        reason: resolutionReason,
+        factors: {
+          membershipFound,
+          membershipCanWrite,
+          eventIsLocked,
+          userRole
+        }
+      });
+
+      setPermissions({
+        canWrite: finalCanWrite,
+        isLocked: eventIsLocked,
+        loading: false,
+        resolved: true
+      });
+
+    } catch (err) {
+      console.error('[PERMISSIONS] Fatal error during permission fetch:', err);
+      // Fail closed - no access on error
+      setPermissions({
+        canWrite: false,
+        isLocked: false,
+        loading: false,
+        resolved: true
+      });
+    }
+  }, [user, selectedLeagueId, selectedEvent?.id, userRole]);
+
+  // Fetch permissions when context changes
+  useEffect(() => {
+    fetchPermissions();
+  }, [fetchPermissions]);
+
+  // Refresh event data on mount
+  useEffect(() => {
+    if (selectedEvent?.id && selectedEvent?.league_id) {
+      const fetchFreshEvent = async () => {
+        try {
+          const response = await api.get(`/leagues/${selectedEvent.league_id}/events/${selectedEvent.id}`);
+          const freshEvent = response.data;
+          
+          if (freshEvent.drillTemplate !== selectedEvent.drillTemplate || 
+              freshEvent.name !== selectedEvent.name ||
+              JSON.stringify(freshEvent.custom_drills) !== JSON.stringify(selectedEvent.custom_drills) ||
+              JSON.stringify(freshEvent.disabled_drills) !== JSON.stringify(selectedEvent.disabled_drills)) {
+             setSelectedEvent(freshEvent);
+          }
+        } catch (error) {
+          console.warn("Background event refresh failed:", error);
+        }
+      };
+      fetchFreshEvent();
+    }
+  }, [selectedEvent?.id, selectedEvent?.league_id, setSelectedEvent]);
+
+  const [selectedAgeGroup, setSelectedAgeGroup] = useState("");
+
+  // Optimized weights hook
+  const {
+    persistedWeights,
+    sliderWeights,
+    activePreset,
+    handleWeightChange,
+    applyPreset,
+    rankings: optimizedRankings,
+    liveRankings,
+    groupedRankings,
+    setSliderWeights,
+    persistSliderWeights
+  } = useOptimizedWeights(players, allDrills, currentPresets);
+
+  // Debounced fetch effect for rankings - moved after hook to use sliderWeights
+  useEffect(() => {
+    if (!showRankings) return; 
+    
+    const timer = setTimeout(() => {
+        fetchRankings(sliderWeights, selectedAgeGroup);
+    }, 500);
+    
+    return () => clearTimeout(timer);
+  }, [fetchRankings, sliderWeights, selectedAgeGroup, showRankings]);
+
+  const [showCustomControls, setShowCustomControls] = useState(false);
+  const [showCompactSliders, setShowCompactSliders] = useState(false);
+  const { showInfo, removeToast } = useToast();
+
+  // Grouped players
+  const grouped = useMemo(() => {
+    if (Object.keys(groupedRankings).length > 0) {
+      return groupedRankings;
+    }
+    return players.reduce((acc, player) => {
+      const ageGroup = player.age_group || 'Unknown';
+      if (!acc[ageGroup]) acc[ageGroup] = [];
+      acc[ageGroup].push(player);
+      return acc;
+    }, {});
+  }, [players, groupedRankings]);
+
+  // Selected group rankings
+  const selectedGroupRankings = useMemo(() => {
+    if (!selectedAgeGroup) return [];
+    if (selectedAgeGroup === 'all') {
+      return calculateOptimizedRankingsAcrossAll(players, persistedWeights, allDrills);
+    }
+    return groupedRankings[selectedAgeGroup] || [];
+  }, [selectedAgeGroup, players, persistedWeights, groupedRankings, allDrills]);
+
+  // Live rankings
+  const selectedLiveRankings = useMemo(() => {
+    if (!selectedAgeGroup) return [];
+    if (selectedAgeGroup === 'all') {
+      return calculateOptimizedRankingsAcrossAll(players, sliderWeights, allDrills);
+    }
+    const filtered = (Array.isArray(liveRankings) ? liveRankings : [])
+      .filter(p => p && p.age_group === selectedAgeGroup);
+    return filtered.length > 0 ? filtered : selectedGroupRankings;
+  }, [selectedAgeGroup, players, sliderWeights, liveRankings, selectedGroupRankings, allDrills]);
+
+  // Selected group players
+  const selectedGroupPlayers = useMemo(() => {
+    if (!selectedAgeGroup) return [];
+    return selectedAgeGroup === 'all' ? players : (grouped[selectedAgeGroup] || []);
+  }, [selectedAgeGroup, players, grouped]);
+
+  // Stats
+  const selectedGroupScoredCount = useMemo(() => {
+    if (!selectedGroupPlayers || selectedGroupPlayers.length === 0) return 0;
+    return selectedGroupPlayers.filter(p =>
+      allDrills.some(drill => p[drill.key] != null && typeof p[drill.key] === 'number')
+    ).length;
+  }, [selectedGroupPlayers, allDrills]);
+
+  const selectedGroupCompletionPct = useMemo(() => {
+    const total = selectedGroupPlayers.length || 0;
+    if (total === 0) return 0;
+    return Math.round((selectedGroupScoredCount / total) * 100);
+  }, [selectedGroupScoredCount, selectedGroupPlayers]);
+
+  // Fetch players
+  const fetchPlayers = useCallback(async () => {
+    if (!selectedEvent || !user || !selectedLeagueId) {
+      console.log('[PLAYERS FETCH] Skipped - missing context:', {
+        hasEvent: !!selectedEvent,
+        hasUser: !!user,
+        hasLeague: !!selectedLeagueId
+      });
+      setPlayers([]);
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // [DIAGNOSTIC] Log fetch parameters
+      console.log('[PLAYERS FETCH] Fetching with:', {
+        eventId: selectedEvent.id,
+        eventName: selectedEvent.name,
+        leagueId: selectedLeagueId,
+        userId: user.uid
+      });
+      
+      const playersData = await cachedFetchPlayers(selectedEvent.id);
+      
+      // [DIAGNOSTIC] Log fetch results
+      console.log('[PLAYERS FETCH] Results:', {
+        playerCount: playersData.length,
+        samplePlayerIds: playersData.slice(0, 3).map(p => p.id),
+        ageGroups: [...new Set(playersData.map(p => p.age_group))],
+        eventId: selectedEvent.id
+      });
+      
+      setPlayers(playersData);
+      
+      if (contextSelectedPlayer) {
+        const updatedPlayer = playersData.find(p => p.id === contextSelectedPlayer.id);
+        if (updatedPlayer) {
+           openDetails(updatedPlayer, {
+              allPlayers: playersData,
+              persistedWeights,
+              sliderWeights,
+              persistSliderWeights,
+              activePreset,
+              applyPreset,
+              drills: allDrills,
+              presets: currentPresets
+           });
+        } else {
+           // Player no longer exists or not found in list (maybe filtered?)
+           // If we want to close, call closeDetails(). 
+           // But openDetails(null) also works if updatedPlayer is null.
+           openDetails(null); 
+        }
+      }
+    } catch (err) {
+      if (err.response?.status === 422) {
+        setError("422: Unprocessable Entity - Players may not be set up yet");
+      } else {
+        setError(err.message || "Failed to load players");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedEvent, user, selectedLeagueId]);
+
+  useEffect(() => {
+    fetchPlayers();
+  }, [fetchPlayers, refreshTrigger]); // Add refreshTrigger to re-fetch when edits happen
+
+  // Auto-select "all" age group
+  useEffect(() => {
+    const availableAgeGroups = Object.keys(grouped);
+    if (!selectedAgeGroup && availableAgeGroups.length > 0) {
+      setSelectedAgeGroup('all');
+    }
+  }, [selectedAgeGroup, grouped]);
+
+  const toggleForm = (id) => {
+    setExpandedPlayerIds(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  // Helper to expand and scroll to ranking preview section
+  const expandRankings = () => {
+    setShowRankings(true);
+    setTimeout(() => {
+      rankingsRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  };
+
+  // CSV Export Helper
+  const exportCsv = (data, filename, headers) => {
+    const escapeCsvCell = (cell) => {
+      if (cell === null || cell === undefined) return '';
+      const str = String(cell);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    let csv = headers.join(',') + '\n';
+    data.forEach(row => {
+      csv += row.map(escapeCsvCell).join(',') + '\n';
+    });
+
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Render Loading
+  if (loading) return (
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-lg mx-auto px-4 sm:px-6 py-8 space-y-3">
+        <Skeleton className="h-24 w-full" />
+        {Array.from({ length: 8 }).map((_, i) => (
+          <Skeleton key={i} className="h-12 w-full" />
+        ))}
+      </div>
+    </div>
+  );
+
+  // Render Error
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <div className="max-w-lg mx-auto px-4 sm:px-6 py-8">
+          <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center">
+            <div className="text-red-500 font-semibold">Error: {error}</div>
+            <button onClick={fetchPlayers} className="mt-4 text-red-600 underline">Retry</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Render No Event
+  if (!selectedEvent || !selectedEvent.id) return (
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-lg mx-auto px-4 sm:px-6 py-8">
+        <div className="bg-white rounded-2xl shadow-lg p-8 text-center border-2 border-blue-200">
+           <h2 className="text-2xl font-bold text-cmf-primary mb-4">No Event Selected</h2>
+           <p className="text-gray-600 mb-6">
+             Please select or create an event to manage players.
+           </p>
+           <EventSelector />
+        </div>
+      </div>
+    </div>
+  );
+
+  // VIEW ONLY MODE (Keep existing viewer layout roughly, or simplified)
+  if (userRole === 'viewer') {
+     return (
+        <div className="min-h-screen bg-gray-50">
+          <div className="max-w-lg mx-auto px-4 sm:px-6 py-8">
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-6 p-4">
+               <div className="flex items-center justify-between">
+                 <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+                   <Users className="w-5 h-5 text-cmf-primary" />
+                   Event Participants
+                 </h2>
+                 <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full">👁️ View Only</span>
+               </div>
+            </div>
+            {/* Use the new Section 3 content for viewers essentially */}
+             <div className="space-y-4">
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                  {/* Age Group Selector for Viewer */}
+                   <div className="flex items-center gap-3 mb-4">
+                    <Filter className="w-5 h-5 text-blue-600 flex-shrink-0" />
+                    <select
+                      value={selectedAgeGroup}
+                      onChange={e => setSelectedAgeGroup(e.target.value)}
+                      className="flex-1 rounded-lg border border-gray-300 p-2 text-sm"
+                    >
+                      <option value="all">All Players ({players.length})</option>
+                      {Object.keys(grouped).map(group => (
+                        <option key={group} value={group}>{group} ({grouped[group].length})</option>
+                      ))}
+                    </select>
+                   </div>
+
+                    {/* Weight Controls & Rankings */}
+                   {selectedLiveRankings.length > 0 ? (
+                      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                        <div className="bg-gradient-to-r from-brand-primary to-brand-secondary text-white p-3">
+                           {/* Weight Presets */}
+                           <div className="flex gap-1 mb-3">
+                            {Object.entries(currentPresets).map(([key, preset]) => (
+                              <button
+                                key={key}
+                                onClick={() => applyPreset(key)}
+                                className={`px-2 py-1 text-xs rounded border transition-all flex-1 ${
+                                  activePreset === key 
+                                    ? 'border-white bg-white/20 text-white font-medium' 
+                                    : 'border-white/30 hover:border-white/60 text-white/80 hover:text-white'
+                                }`}
+                              >
+                                {preset.name}
+                              </button>
+                            ))}
+                          </div>
+                          {/* Compact Sliders Toggle */}
+                           <button
+                            onClick={() => setShowCompactSliders((v) => !v)}
+                            className="w-full bg-white/20 hover:bg-white/30 text-white px-2 py-1 rounded text-xs font-medium mb-2"
+                          >
+                            {showCompactSliders ? 'Hide sliders' : 'Adjust weights'}
+                          </button>
+
+                          {showCompactSliders && (
+                            <div className="bg-white/10 rounded p-2 mb-2">
+                              <div className="grid grid-cols-5 gap-2 text-xs">
+                                {allDrills.map((drill) => (
+                                  <div key={drill.key} className="text-center">
+                                    <div className="font-medium mb-1 truncate">{drill.label.replace(' ', '')}</div>
+                                    <input
+                                      type="range"
+                                      value={sliderWeights[drill.key] ?? 50}
+                                      min={0}
+                                      max={100}
+                                      step={5}
+                                      onChange={(e) => handleWeightChange(drill.key, parseFloat(e.target.value))}
+                                      className="w-full h-1 rounded cursor-pointer accent-white"
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Rankings List */}
+                         <div className="p-3 space-y-1">
+                           {selectedLiveRankings.slice(0, 10).map((player, index) => (
+                             <PlayerCard
+                               key={player.id}
+                               player={player}
+                               variant="compact"
+                               rankIndex={index}
+                               showScore={true}
+                             />
+                           ))}
+                         </div>
+                      </div>
+                   ) : (
+                     <div className="text-center py-8 text-gray-500">Rankings will appear once scores are recorded.</div>
+                   )}
+                </div>
+             </div>
+          </div>
+        </div>
+     );
+  }
+
+  // MAIN REDESIGN (Coach/Organizer)
+  return (
+    <div className="min-h-screen bg-gray-50">
+      <div className="max-w-lg mx-auto px-4 sm:px-6 py-8">
+        
+        {/* Navigation Affordance */}
+        <div className="flex items-center justify-between mb-4">
+          <Link to="/dashboard" className="flex items-center text-gray-600 hover:text-gray-900 transition-colors">
+            <ArrowLeft className="w-5 h-5 mr-1" />
+            <span className="font-medium">Back to Dashboard</span>
+          </Link>
+          <div className="flex gap-2">
+             <Link to="/schedule" className="text-xs font-medium text-gray-500 hover:text-gray-900 px-2 py-1">
+               View Schedule
+             </Link>
+          </div>
+        </div>
+
+        {/* PERMISSION STATUS BADGE - Show for coaches when read-only */}
+        {userRole === 'coach' && !permissions.canWrite && permissions.resolved && (
+          <div className="bg-orange-50 border-2 border-orange-200 rounded-xl p-4 mb-4">
+            <div className="flex items-center gap-3">
+              <div className="flex-shrink-0 w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center">
+                <span className="text-xl">👁️</span>
+              </div>
+              <div className="flex-1">
+                <div className="font-semibold text-orange-900 mb-1">View Only Access</div>
+                <div className="text-sm text-orange-700">
+                  {permissions.isLocked 
+                    ? "This combine is locked. Contact the organizer if you need edit access."
+                    : "Your account has read-only permissions. Contact the organizer if you need to edit players or scores."}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* SECTION 1: Primary Actions (State-Aware) */}
+        <div className="bg-white rounded-2xl shadow-lg p-6 mb-4 border-2 border-blue-200">
+          <h1 className="text-2xl font-bold text-cmf-secondary mb-4">
+            WooCombine: Players & Rankings
+          </h1>
+          
+          <div className="space-y-4">
+            {/* State-Aware Primary CTA */}
+            {(() => {
+              // State 1: No players
+              if (players.length === 0) {
+                // Don't show add button if read-only
+                if (!permissions.canWrite) {
+                  return (
+                    <div className="text-center py-8 text-gray-500">
+                      <Users className="w-12 h-12 mx-auto mb-3 text-gray-400" />
+                      <p className="font-medium">No players added yet</p>
+                      <p className="text-sm mt-1">Contact the organizer to add players to this event</p>
+                    </div>
+                  );
+                }
+                return (
+                  <button
+                    onClick={() => setShowAddPlayerModal(true)}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 px-6 rounded-xl shadow-lg transition-all duration-200 transform hover:scale-[1.02] flex items-center justify-center gap-3 text-lg"
+                  >
+                    <UserPlus className="w-5 h-5" />
+                    Add Players to Get Started
+                    <ArrowRight className="w-5 h-5" />
+                  </button>
+                );
+              }
+              
+              // State 2: No scores yet
+              if (totalScoresCount === 0) {
+                // Don't show recording button if read-only
+                if (!permissions.canWrite) {
+                  return (
+                    <div className="text-center py-6 px-4 bg-blue-50 rounded-xl">
+                      <BarChart3 className="w-10 h-10 mx-auto mb-2 text-blue-500" />
+                      <p className="font-medium text-blue-900">No drill results recorded yet</p>
+                      <p className="text-sm text-blue-700 mt-1">Results will appear here once the organizer records them</p>
+                    </div>
+                  );
+                }
+                return (
+                  <Link
+                    to="/live-entry"
+                    className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-4 px-6 rounded-xl shadow-lg transition-all duration-200 transform hover:scale-[1.02] flex items-center justify-center gap-3 text-lg"
+                  >
+                    🚀 Start Recording Drill Results
+                    <ArrowRight className="w-5 h-5" />
+                  </Link>
+                );
+              }
+              
+              // State 3: In progress
+              if (completionRate < 100) {
+                // Don't show continue button if read-only
+                if (!permissions.canWrite) {
+                  return (
+                    <div className="text-center py-4 px-4 bg-orange-50 rounded-xl">
+                      <TrendingUp className="w-8 h-8 mx-auto mb-2 text-orange-500" />
+                      <p className="font-medium text-orange-900">Results in progress</p>
+                      <p className="text-sm text-orange-700 mt-1">
+                        {Math.round(completionRate)}% complete ({totalScoresCount}/{players.length} players)
+                      </p>
+                    </div>
+                  );
+                }
+                return (
+                  <Link
+                    to="/live-entry"
+                    className="w-full bg-orange-600 hover:bg-orange-700 text-white font-semibold py-4 px-6 rounded-xl shadow-lg transition-all duration-200 transform hover:scale-[1.02] flex flex-col items-center justify-center gap-2 text-lg"
+                  >
+                    <div className="flex items-center gap-3">
+                      <TrendingUp className="w-5 h-5" />
+                      Continue Recording Results
+                      <ArrowRight className="w-5 h-5" />
+                    </div>
+                    <div className="text-sm font-normal opacity-90">
+                      {Math.round(completionRate)}% complete ({totalScoresCount}/{players.length} players)
+                    </div>
+                  </Link>
+                );
+              }
+              
+              // State 4: Complete - show results-focused CTAs
+              return (
+                <div className="space-y-3">
+                  <button
+                    onClick={expandRankings}
+                    className="w-full bg-cmf-primary hover:bg-cmf-secondary text-white font-semibold py-4 px-6 rounded-xl shadow-lg transition-all duration-200 transform hover:scale-[1.02] flex items-center justify-center gap-3 text-lg"
+                  >
+                    <Trophy className="w-5 h-5" />
+                    Review Rankings
+                    <ArrowRight className="w-5 h-5" />
+                  </button>
+                  
+                  <div className="flex items-center gap-2 text-sm text-gray-600">
+                    <CheckCircle className="w-4 h-4 text-green-600" />
+                    <span className="font-medium">All players evaluated ({players.length}/{players.length})</span>
+                  </div>
+                  
+                  {/* Demoted: Still accessible but not primary */}
+                  <details className="text-sm">
+                    <summary className="cursor-pointer text-gray-600 hover:text-gray-900 font-medium">
+                      Need to record more results?
+                    </summary>
+                    <div className="mt-2 pl-4">
+                      <Link 
+                        to="/live-entry"
+                        className="text-cmf-primary hover:text-cmf-secondary underline"
+                      >
+                        Open Live Entry Mode
+                      </Link>
+                    </div>
+                  </details>
+                </div>
+              );
+            })()}
+
+            {/* Secondary CTAs - Always Available */}
+            <div className="grid grid-cols-3 gap-3">
+              {players.length > 0 && permissions.canWrite && (
+                <button
+                  onClick={() => setShowAddPlayerModal(true)}
+                  className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl transition border border-blue-200"
+                >
+                  <UserPlus className="w-5 h-5 mb-1" />
+                  <span className="text-xs font-medium">Add Player</span>
+                </button>
+              )}
+              
+              {/* MANDATORY GUARDRAIL: Import Results must be explicitly user-initiated and tied to confirmed selected event */}
+              {selectedEvent?.id && permissions.canWrite && (
+                <button
+                  onClick={() => {
+                    setDrillRefreshTrigger(t => t + 1);
+                    setShowImportModal(true);
+                  }}
+                  className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl transition border border-blue-200"
+                >
+                  <Upload className="w-5 h-5 mb-1" />
+                  <span className="text-xs font-medium">Import Results</span>
+                </button>
+              )}
+              
+              <button
+                onClick={() => setShowExportModal(true)}
+                className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl transition border border-blue-200"
+              >
+                <FileText className="w-5 h-5 mb-1" />
+                <span className="text-xs font-medium">Export Data</span>
+              </button>
+            </div>
+
+            <p className="text-sm text-gray-600 text-center">
+              {completionRate === 100 
+                ? "Analyze rankings, export results, or continue adding scores."
+                : "Record drill times, scores, and performance metrics."}
+            </p>
+          </div>
+        </div>
+
+        {/* SECTION 2: Roster Management (Collapsed by default) */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 mb-4 overflow-hidden">
+          <button 
+            onClick={() => setShowRoster(!showRoster)}
+            className="w-full flex items-center justify-between p-4 bg-gray-50 hover:bg-gray-100 transition-colors"
+          >
+            <span className="font-semibold text-gray-900 flex items-center gap-2">
+              {showRoster ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+              Manage Players
+            </span>
+            {!showRoster && <span className="text-xs text-gray-500">Tap to expand</span>}
+          </button>
+
+          {showRoster && (
+            <div className="p-4 border-t border-gray-200">
+              {/* Filters */}
+              <div className="flex items-center gap-3 mb-4">
+                <select
+                  value={selectedAgeGroup}
+                  onChange={e => setSelectedAgeGroup(e.target.value)}
+                  className="flex-1 rounded-lg border border-gray-300 p-2 text-sm focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="all">All Players ({players.length})</option>
+                  {Object.keys(grouped).map(group => (
+                    <option key={group} value={group}>{group} ({grouped[group].length})</option>
+                  ))}
+                </select>
+                
+                <button
+                  onClick={expandRankings}
+                  className="bg-cmf-primary hover:bg-cmf-secondary text-white px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-1"
+                >
+                  View Ranking Preview <ArrowRight className="w-3 h-3" />
+                </button>
+              </div>
+              
+              <p className="text-xs text-gray-500 mt-2 text-center">Quick in-page summary & adjustments</p>
+
+              {/* Player List */}
+              <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                {selectedGroupPlayers.length === 0 ? (
+                  <PlayerCardEmpty message="No players found. Add some players to get started!" />
+                ) : (
+                  selectedGroupPlayers.map((player) => (
+                    <div key={player.id} className="space-y-2">
+                      <PlayerCard
+                        player={player}
+                        variant="card"
+                        onViewStats={() => openDetails(player, {
+                          allPlayers: players,
+                          persistedWeights,
+                          sliderWeights,
+                          persistSliderWeights,
+                          activePreset,
+                          applyPreset,
+                          drills: allDrills,
+                          presets: currentPresets
+                        })}
+                        onEdit={() => setEditingPlayer(player)}
+                        canEdit={permissions.canWrite}
+                      />
+                      
+                      {/* Context-specific action: Add Result - only show if can edit */}
+                      {permissions.canWrite && (
+                        <button
+                          onClick={() => toggleForm(player.id)}
+                          className="w-full bg-brand-light/20 hover:bg-brand-light/30 text-brand-primary px-3 py-2 rounded-md text-sm font-medium transition"
+                        >
+                          Add Result
+                        </button>
+                      )}
+                      
+                      {/* Expanded drill input form */}
+                      {expandedPlayerIds[player.id] && (
+                        <div className="bg-blue-50 rounded-lg p-4 border-2 border-blue-200 mt-3">
+                          <DrillInputForm 
+                            playerId={player.id} 
+                            drills={allDrills}
+                            onSuccess={() => { 
+                              toggleForm(player.id); 
+                              if (selectedEvent) {
+                                cacheInvalidation.playersUpdated(selectedEvent.id);
+                              }
+                              fetchPlayers(); 
+                            }} />
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* SECTION 3: Rankings (Collapsed by default) */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden" ref={rankingsRef}>
+          <button 
+            onClick={() => setShowRankings(!showRankings)}
+            className="w-full flex items-center justify-between p-4 bg-gray-50 hover:bg-gray-100 transition-colors"
+          >
+            <span className="font-semibold text-gray-900 flex items-center gap-2">
+              {showRankings ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+              Ranking Preview
+            </span>
+            {!showRankings && <span className="text-xs text-gray-500">Tap to expand</span>}
+          </button>
+
+          {showRankings && (
+            <div className="p-4 border-t border-gray-200">
+               {loadingRankings ? (
+                  <div className="space-y-3">
+                    <Skeleton className="h-24 w-full rounded-xl" />
+                    <Skeleton className="h-12 w-full rounded-lg" />
+                    <Skeleton className="h-12 w-full rounded-lg" />
+                    <Skeleton className="h-12 w-full rounded-lg" />
+                  </div>
+               ) : backendRankings && backendRankings.length > 0 ? (
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    {/* Weight Controls */}
+                    <div className="bg-gradient-to-r from-cmf-primary to-cmf-secondary text-white p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <TrendingUp className="w-4 h-4" />
+                          <span className="font-semibold text-sm">{selectedAgeGroup === 'all' ? 'Top Prospects: All' : `Top Prospects: ${selectedAgeGroup}`}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setShowCompactSliders((v) => !v)}
+                            className="bg-white/20 hover:bg-white/30 text-white px-2 py-1 rounded text-xs font-medium"
+                          >
+                            {showCompactSliders ? 'Hide sliders' : 'Adjust weights'}
+                          </button>
+                        </div>
+                      </div>
+                      
+                         {/* Presets */}
+                      <div className="flex gap-1 mb-3">
+                        {Object.entries(currentPresets).map(([key, preset]) => (
+                          <button
+                            key={key}
+                            onClick={() => applyPreset(key)}
+                            className={`px-2 py-1 text-xs rounded border transition-all flex-1 ${
+                              activePreset === key 
+                                ? 'border-white bg-white/20 text-white font-medium' 
+                                : 'border-white/30 hover:border-white/60 text-white/80 hover:text-white'
+                            }`}
+                          >
+                            {preset.name}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Sliders */}
+                      {showCompactSliders && (
+                        <div className="bg-white/10 rounded p-2 mb-2">
+                          <div className="grid grid-cols-5 gap-2 text-xs">
+                            {allDrills.map((drill) => (
+                              <div key={drill.key} className="text-center">
+                                <div className="font-medium mb-1 truncate">{drill.label.replace(' ', '')}</div>
+                                <input
+                                  type="range"
+                                  value={sliderWeights[drill.key] ?? 50}
+                                  min={0}
+                                  max={100}
+                                  step={5}
+                                  onChange={(e) => handleWeightChange(drill.key, parseFloat(e.target.value))}
+                                  className="w-full h-1 rounded cursor-pointer accent-white"
+                                />
+                                <div className="font-mono font-bold text-xs mt-1">
+                                  {(sliderWeights[drill.key] || 0).toFixed(0)}%
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      
+                      <div className="text-xs text-white/80 italic text-center">
+                        * Adjust weights to see how rankings change based on priorities
+                      </div>
+                    </div>
+
+                    {/* Rankings List */}
+                    <div className="p-3 space-y-1">
+                      {backendRankings.slice(0, 5).map((player, index) => {
+                        const fullPlayer = players.find(p => p.id === (player.player_id || player.id)) || player;
+                        return (
+                          <PlayerCard
+                            key={player.player_id || player.id}
+                            player={{
+                              ...fullPlayer,
+                              composite_score: player.composite_score ?? player.weightedScore
+                            }}
+                            variant="compact"
+                            rankIndex={index}
+                            showScore={true}
+                            onSelect={() => openDetails(fullPlayer, {
+                              allPlayers: players,
+                              persistedWeights,
+                              sliderWeights,
+                              persistSliderWeights,
+                              activePreset,
+                              applyPreset,
+                              drills: allDrills,
+                              presets: currentPresets
+                            })}
+                          />
+                        );
+                      })}
+
+                      {/* View Full Rankings CTA */}
+                      <div className="pt-3 text-center border-t border-gray-100 mt-2">
+                        <Link 
+                          to="/live-standings"
+                          className="text-sm text-cmf-primary hover:text-cmf-secondary font-medium flex items-center justify-center gap-1"
+                        >
+                          View Full Leaderboard <ArrowRight className="w-4 h-4" />
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+               ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    <TrendingUp className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                    <p>Rankings will appear once scores are recorded.</p>
+                  </div>
+               )}
+            </div>
+          )}
+        </div>
+
+      </div>
+
+      {/* MODALS */}
+      {/* PlayerDetailsModal is now managed globally by PlayerDetailsContext */}
+      
+      {editingPlayer && (
+        <EditPlayerModal
+          player={editingPlayer}
+          allPlayers={players}
+          onClose={() => setEditingPlayer(null)}
+          onSave={() => {
+            if (selectedEvent) cacheInvalidation.playersUpdated(selectedEvent.id);
+            fetchPlayers();
+          }}
+        />
+      )}
+      {showAddPlayerModal && (
+        <AddPlayerModal
+          allPlayers={players}
+          onClose={() => setShowAddPlayerModal(false)}
+          onSave={() => {
+            if (selectedEvent) cacheInvalidation.playersUpdated(selectedEvent.id);
+            fetchPlayers();
+          }}
+        />
+      )}
+
+      {showImportModal && (
+        <ImportResultsModal
+          onClose={() => {
+            setShowImportModal(false);
+            // Clear action=import query param to prevent modal from reopening
+            navigate('/players', { replace: true });
+          }}
+          onSuccess={() => {
+            if (selectedEvent) cacheInvalidation.playersUpdated(selectedEvent.id);
+            fetchPlayers();
+          }}
+          availableDrills={allDrills} // REQUIRED: Pass event-specific drills
+        />
+      )}
+      
+      {/* EXPORT DATA MODAL */}
+      {showExportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6">
+             <div className="flex justify-between items-center mb-4">
+               <h3 className="text-xl font-bold text-gray-900">Export Data</h3>
+               <button onClick={() => setShowExportModal(false)} className="text-gray-500 hover:text-gray-700">
+                 <X className="w-6 h-6" />
+               </button>
+             </div>
+             
+             <div className="space-y-3">
+               {/* PDF Export Button */}
+               <button
+                  onClick={() => {
+                    const url = `${api.defaults.baseURL}/events/${selectedEvent.id}/export-pdf`;
+                    window.open(url, '_blank');
+                    setShowExportModal(false);
+                  }}
+                  className="w-full p-4 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-lg text-left transition flex items-center justify-between mb-4"
+               >
+                 <div>
+                    <div className="font-semibold text-teal-900 flex items-center gap-2">
+                        <FileText className="w-5 h-5" /> Download Results PDF
+                    </div>
+                    <div className="text-sm text-teal-700">Formal report with rankings & stats</div>
+                 </div>
+                 <Download className="w-5 h-5 text-teal-700" />
+               </button>
+
+               {/* Export All */}
+               <button
+                  onClick={() => {
+                    const allP = players.filter(p => p.composite_score != null);
+                    if(allP.length === 0) return;
+                    const headers = ['Rank', 'Name', 'Number', 'Age Group', 'Composite Score', ...allDrills.map(d => d.label)];
+                    const data = allP.sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0)).map((p, i) => [
+                      i + 1, p.name, p.number, p.age_group, (p.composite_score||0).toFixed(2), ...allDrills.map(d => p[d.key])
+                    ]);
+                    exportCsv(data, `rankings_all_${format(new Date(), 'yyyy-MM-dd')}.csv`, headers);
+                    setShowExportModal(false);
+                  }}
+                  disabled={players.filter(p => p.composite_score != null).length === 0}
+                  className="w-full p-4 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-left transition disabled:opacity-50"
+               >
+                 <div className="font-semibold text-blue-900">Export All Players</div>
+                 <div className="text-sm text-blue-700">Complete CSV with all age groups</div>
+               </button>
+
+               <div className="border-t border-gray-100 my-3"></div>
+               <p className="text-sm text-gray-500 mb-2">By Age Group:</p>
+
+               {Object.keys(grouped).map(group => {
+                 const groupP = grouped[group].filter(p => p.composite_score != null);
+                 return (
+                   <button
+                      key={group}
+                      disabled={groupP.length === 0}
+                      onClick={() => {
+                         const headers = ['Rank', 'Name', 'Number', 'Composite Score', ...allDrills.map(d => d.label)];
+                         const data = groupP.sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0)).map((p, i) => [
+                            i + 1, p.name, p.number, (p.composite_score||0).toFixed(2), ...allDrills.map(d => p[d.key])
+                         ]);
+                         exportCsv(data, `rankings_${group}_${format(new Date(), 'yyyy-MM-dd')}.csv`, headers);
+                         setShowExportModal(false);
+                      }}
+                      className="w-full p-3 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg text-left transition flex justify-between items-center disabled:opacity-50"
+                   >
+                     <span className="font-medium text-gray-700">{group}</span>
+                     <span className="text-xs text-gray-500">{groupP.length} scores</span>
+                   </button>
+                 );
+               })}
+               
+               {Object.keys(grouped).length === 0 && <div className="text-center text-gray-400 text-sm py-4">No player data available.</div>}
+             </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

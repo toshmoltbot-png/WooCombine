@@ -1,0 +1,58 @@
+import React from "react";
+import { useAuth } from "./AuthContext";
+import { Navigate, useLocation } from "react-router-dom";
+import LoadingScreen from '../components/LoadingScreen';
+
+export default function RequireAuth({ children, skipRoleCheck = false }) {
+  const { user, initializing, authChecked, roleChecked, userRole } = useAuth();
+  const location = useLocation();
+
+  const isSelectRole = location.pathname === '/select-role';
+
+  // CRITICAL FIX: Always wait for roleChecked, even for SelectRole page.
+  // This prevents the SelectRole UI from flashing briefly for users who already have a role
+  // but whose role check hasn't finished yet.
+  if (initializing || !authChecked || !roleChecked) {
+    return (
+      <LoadingScreen 
+        title="Setting up your account..."
+        subtitle="Almost there..."
+        size="large"
+        showProgress={true}
+      />
+    );
+  }
+  
+  if (!user) {
+    return <Navigate to="/welcome" replace />;
+  }
+  
+  // Require email verification for new accounts
+  if (!user.emailVerified) {
+    return <Navigate to="/verify-email" replace />;
+  }
+  
+  // CRITICAL FIX: Skip role check for routes wrapped in RouteDecisionGate
+  // The gate will handle role-based routing decisions after all state is ready
+  // This prevents RequireAuth from redirecting to /select-role prematurely
+  if (skipRoleCheck) {
+    return children;
+  }
+  
+  // Special case: if user is authenticated but has no role,
+  // redirect to select-role UNLESS we're already on that page
+  if (!userRole && location.pathname !== '/select-role') {
+    // CRITICAL FIX: Preserve pendingEventJoin for invited users
+    // Check if we're on a join-event route and preserve the invitation context
+    if (location.pathname.startsWith('/join-event/')) {
+      const joinPath = location.pathname.replace('/join-event/', '');
+      localStorage.setItem('pendingEventJoin', joinPath);
+      
+    }
+    
+    console.log('[RequireAuth] NAV_FROM: RequireAuth → /select-role (no role)');
+    return <Navigate to="/select-role" replace />;
+  }
+  
+  return children;
+} 

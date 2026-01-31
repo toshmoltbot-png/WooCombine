@@ -1,0 +1,1108 @@
+from fastapi import APIRouter, Depends, HTTPException, Request, Path, Query, Response
+from google.cloud import firestore
+from typing import Optional, List
+from ..firestore_client import db
+from ..auth import get_current_user, require_role
+from ..middleware.rate_limiting import read_rate_limit, write_rate_limit
+from datetime import datetime
+import logging
+from ..utils.database import execute_with_timeout
+from ..utils.data_integrity import (
+    ensure_league_document,
+    enforce_event_league_relationship,
+)
+from ..security.access_matrix import require_permission
+from pydantic import BaseModel
+from ..utils.delete_token import generate_delete_intent_token, validate_delete_intent_token
+import jwt
+from typing import Dict
+from ..models import (
+    CustomDrillCreateRequest,
+    CustomDrillUpdateRequest,
+    CustomDrillSchema
+)
+from ..utils.event_schema import get_event_schema
+
+router = APIRouter()
+
+
+
+@router.get('/leagues/{league_id}/events')
+@read_rate_limit()
+@require_permission("events", "list", target="league", target_param="league_id")
+def list_events(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"),
+    page: Optional[int] = Query(None, ge=1),
+    limit: Optional[int] = Query(None, ge=1, le=500),
+    current_user=Depends(get_current_user)
+):
+    try:
+        events_ref = db.collection("leagues").document(league_id).collection("events")
+        # Add timeout to events retrieval and cap to reduce large payloads
+        # Order newest first; use Firestore's Query constants explicitly to avoid FastAPI's Query name clash
+        events_query = events_ref.order_by("created_at", direction=firestore.Query.DESCENDING).limit(200)
+        events_stream = execute_with_timeout(
+            lambda: list(events_query.stream()),
+            timeout=10,
+            operation_name="events retrieval"
+        )
+        # Filter out soft-deleted events (those with deleted_at timestamp)
+        events_list = [
+            dict(e.to_dict(), id=e.id) 
+            for e in events_stream 
+            if not e.to_dict().get("deleted_at")
+        ]
+        # Optional in-memory pagination (non-breaking; only applies when provided)
+        if page is not None and limit is not None:
+            start = (page - 1) * limit
+            end = start + limit
+            events = events_list[start:end]
+        else:
+            events = events_list
+        logging.info(f"Found {len(events)} events for league {league_id}")
+        return {"events": events}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error listing events for league {league_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list events")
+
+class EventCreateRequest(BaseModel):
+    name: str
+    date: str | None = None
+    location: str | None = None
+    notes: str | None = None
+    drillTemplate: str | None = "football"
+    disabledDrills: List[str] = []
+
+@router.post('/leagues/{league_id}/events')
+@write_rate_limit()
+@require_permission("events", "create", target="league", target_param="league_id")
+def create_event(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"), 
+    req: EventCreateRequest | None = None, 
+    current_user=Depends(require_role("organizer"))
+):
+    try:
+        name = req.name if req else None
+        date = req.date if req else None
+        location = req.location if req else None
+        notes = req.notes if req else None
+        drill_template = req.drillTemplate if req and req.drillTemplate else "football"
+        disabled_drills = req.disabledDrills if req else []
+        
+        logging.info(f"Event creation request - Name: {name}, Template: {drill_template}, Disabled: {disabled_drills}")
+
+        if not name:
+            raise HTTPException(status_code=400, detail="Event name is required")
+
+        # DUPLICATE PROTECTION: Check if event with same name and date already exists in this league
+        # This prevents accidental double-submissions from frontend
+        existing_query = (
+            db.collection("leagues").document(league_id).collection("events")
+            .where("name", "==", name)
+            .where("date", "==", date)
+            .limit(1)
+        )
+        
+        existing_events = execute_with_timeout(
+            lambda: list(existing_query.stream()),
+            timeout=5,
+            operation_name="check duplicate event"
+        )
+        
+        if len(existing_events) > 0:
+            logging.warning(f"Duplicate event creation attempted: {name} on {date} in league {league_id}")
+            # Return the existing event ID instead of creating a new one (idempotency)
+            # or raise error. Returning existing ID is safer for "double click" scenarios.
+            return {"event_id": existing_events[0].id, "message": "Event already exists"}
+
+        # Validate drill template exists
+        valid_templates = ["football", "soccer", "basketball", "baseball", "track", "volleyball"]
+        if drill_template not in valid_templates:
+            logging.warning(f"Invalid drill template '{drill_template}' requested. Defaulting to 'football'.")
+            drill_template = "football"
+
+        ensure_league_document(league_id)
+        # Create event in league subcollection (for league-specific queries)
+        events_ref = db.collection("leagues").document(league_id).collection("events")
+        event_ref = events_ref.document()
+        
+        event_data = {
+            "name": name,
+            "date": date,
+            "location": location or "",
+            "notes": notes or "",
+            "league_id": league_id,  # Add league_id reference
+            "drillTemplate": drill_template,
+            "disabled_drills": disabled_drills,
+            "created_at": datetime.utcnow().isoformat(),
+            "live_entry_active": False,
+        }
+        
+        # ATOMIC BATCH WRITE for consistency
+        batch = db.batch()
+        
+        # Store event in league subcollection
+        batch.set(event_ref, event_data)
+        
+        # ALSO store event in top-level events collection (for players endpoints)
+        top_level_event_ref = db.collection("events").document(event_ref.id)
+        batch.set(top_level_event_ref, event_data)
+        
+        execute_with_timeout(
+            lambda: batch.commit(),
+            timeout=10,
+            operation_name="atomic event creation"
+        )
+        
+        logging.info(f"Created event {event_ref.id} in league {league_id}")
+        # Return complete event object to prevent frontend data inconsistency
+        return {
+            "event_id": event_ref.id,
+            "event": {
+                **event_data,
+                "id": event_ref.id
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error creating event in league {league_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create event")
+
+@router.get('/leagues/{league_id}/events/{event_id}')
+@read_rate_limit()
+@require_permission("events", "read", target="league", target_param="league_id")
+def get_event(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"),
+    event_id: str = Path(..., regex=r"^.{1,50}$"),
+    current_user=Depends(get_current_user)
+):
+    try:
+        enforce_event_league_relationship(
+            event_id=event_id,
+            expected_league_id=league_id,
+        )
+        # Try to get event from league subcollection first
+        league_event_ref = db.collection("leagues").document(league_id).collection("events").document(event_id)
+        event_doc = execute_with_timeout(
+            lambda: league_event_ref.get(),
+            timeout=10,
+            operation_name="event retrieval from league"
+        )
+        
+        if event_doc.exists:
+            event_data = event_doc.to_dict()
+            
+            # CRITICAL: Reject soft-deleted events (must filter everywhere)
+            if event_data.get("deleted_at"):
+                logging.warning(f"Event {event_id} is soft-deleted, returning 404")
+                raise HTTPException(status_code=404, detail="Event not found")
+            
+            event_data["id"] = event_doc.id
+            logging.info(f"Found event {event_id} in league {league_id}")
+            return event_data
+        
+        # If not found in league subcollection, try top-level events collection
+        top_level_event_ref = db.collection("events").document(event_id)
+        event_doc = execute_with_timeout(
+            lambda: top_level_event_ref.get(),
+            timeout=10,
+            operation_name="event retrieval from global collection"
+        )
+        
+        if event_doc.exists:
+            event_data = event_doc.to_dict()
+            
+            # CRITICAL: Reject soft-deleted events (must filter everywhere)
+            if event_data.get("deleted_at"):
+                logging.warning(f"Event {event_id} in top-level collection is soft-deleted, returning 404")
+                raise HTTPException(status_code=404, detail="Event not found")
+            
+            event_data["id"] = event_doc.id
+            # Verify it belongs to the requested league
+            if event_data.get("league_id") == league_id:
+                logging.info(f"Found event {event_id} in top-level collection for league {league_id}")
+                return event_data
+        
+        logging.warning(f"Event {event_id} not found in league {league_id}")
+        raise HTTPException(status_code=404, detail="Event not found")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error fetching event {event_id} from league {league_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch event")
+
+class EventUpdateRequest(BaseModel):
+    name: str
+    date: str | None = None
+    location: str | None = None
+    notes: str | None = None
+    drillTemplate: str | None = None
+    live_entry_active: bool | None = None
+    disabledDrills: List[str] | None = None
+
+class EventDeleteRequest(BaseModel):
+    confirmation_name: str  # Must match event name exactly
+
+@router.put('/leagues/{league_id}/events/{event_id}')
+@write_rate_limit()
+@require_permission("events", "update", target="league", target_param="league_id")
+def update_event(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"), 
+    event_id: str = Path(..., regex=r"^.{1,50}$"), 
+    req: EventUpdateRequest | None = None, 
+    current_user=Depends(require_role("organizer"))
+):
+    try:
+        name = req.name if req else None
+        date = req.date if req else None
+        location = req.location if req else None
+        notes = req.notes if req else None
+        
+        if not name:
+            raise HTTPException(status_code=400, detail="Event name is required")
+
+        enforce_event_league_relationship(
+            event_id=event_id,
+            expected_league_id=league_id,
+        )
+        # Prepare update data with validation
+        update_data = {
+            "name": name,
+            "date": date,
+            "location": location or "",
+            "notes": notes or "",
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        
+        # Add drillTemplate if provided and valid
+        if req and req.drillTemplate:
+            # Validate drill template exists
+            valid_templates = ["football", "soccer", "basketball", "baseball", "track", "volleyball"]
+            if req.drillTemplate not in valid_templates:
+                raise HTTPException(status_code=400, detail=f"Invalid drill template. Must be one of: {', '.join(valid_templates)}")
+            update_data["drillTemplate"] = req.drillTemplate
+        
+        # Add live_entry_active if provided
+        if req and req.live_entry_active is not None:
+            update_data["live_entry_active"] = req.live_entry_active
+
+        # Add disabledDrills if provided
+        if req and req.disabledDrills is not None:
+            update_data["disabled_drills"] = req.disabledDrills
+
+        # Update event in league subcollection
+        league_event_ref = db.collection("leagues").document(league_id).collection("events").document(event_id)
+        execute_with_timeout(
+            lambda: league_event_ref.update(update_data),
+            timeout=10,
+            operation_name="event update in league"
+        )
+        
+        # Also update in top-level events collection
+        top_level_event_ref = db.collection("events").document(event_id)
+        execute_with_timeout(
+            lambda: top_level_event_ref.update(update_data),
+            timeout=10,
+            operation_name="event update in global collection"
+        )
+        
+        logging.info(f"Updated event {event_id} in league {league_id}")
+        return {"message": "Event updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error updating event {event_id} in league {league_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update event")
+
+@router.get('/leagues/{league_id}/events/{event_id}/stats')
+@read_rate_limit()
+@require_permission("events", "read", target="league", target_param="league_id")
+def get_event_stats(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"),
+    event_id: str = Path(..., regex=r"^.{1,50}$"),
+    current_user=Depends(get_current_user)
+):
+    """Get event statistics for deletion warnings (player count, scores, etc.)"""
+    try:
+        enforce_event_league_relationship(
+            event_id=event_id,
+            expected_league_id=league_id,
+        )
+        
+        # Get event details
+        event_ref = db.collection("events").document(event_id)
+        event_doc = execute_with_timeout(
+            lambda: event_ref.get(),
+            timeout=5,
+            operation_name="event stats retrieval"
+        )
+        
+        if not event_doc.exists:
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        event_data = event_doc.to_dict()
+        
+        # DEFENSIVE: Reject soft-deleted events (shouldn't happen during normal flow, but be safe)
+        if event_data.get("deleted_at"):
+            logging.warning(f"Event {event_id} is already soft-deleted, cannot get stats")
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        # Count players
+        players_ref = db.collection("events").document(event_id).collection("players")
+        players_docs = execute_with_timeout(
+            lambda: list(players_ref.limit(1000).stream()),
+            timeout=10,
+            operation_name="players count"
+        )
+        player_count = len(players_docs)
+        
+        # Check if any players have scores
+        has_scores = False
+        for player_doc in players_docs[:50]:  # Sample first 50 players
+            player_data = player_doc.to_dict()
+            # Check for any drill score fields
+            drill_keys = [k for k in player_data.keys() if k not in ['id', 'name', 'first_name', 'last_name', 'number', 'age_group', 'external_id', 'team_name', 'position', 'notes', 'created_at']]
+            if drill_keys:
+                has_scores = True
+                break
+        
+        return {
+            "event_id": event_id,
+            "event_name": event_data.get("name", ""),
+            "event_date": event_data.get("date", ""),
+            "player_count": player_count,
+            "has_scores": has_scores,
+            "created_at": event_data.get("created_at", ""),
+            "live_entry_active": event_data.get("live_entry_active", False)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting event stats for {event_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get event stats")
+
+@router.post('/leagues/{league_id}/events/{event_id}/delete-intent-token')
+@write_rate_limit()
+@require_permission("events", "delete", target="league", target_param="league_id")
+def issue_delete_intent_token(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"),
+    event_id: str = Path(..., regex=r"^.{1,50}$"),
+    current_user=Depends(require_role("organizer"))
+):
+    """
+    Issue a short-lived delete intent token after Layer 2 (typed name confirmation).
+    
+    Token is bound to:
+    - user_id (who initiated deletion)
+    - league_id (league containing event)
+    - target_event_id (event being deleted)
+    - expires_at (5 minutes from now)
+    
+    This prevents:
+    - UI drift (token bound to specific target)
+    - Replay attacks (token expires)
+    - Malicious calls (token must be signed by server)
+    """
+    try:
+        # Verify event exists and belongs to league
+        enforce_event_league_relationship(
+            event_id=event_id,
+            expected_league_id=league_id,
+        )
+        
+        # Generate token (will raise RuntimeError if secret key not configured)
+        try:
+            token = generate_delete_intent_token(
+                user_id=current_user["uid"],
+                league_id=league_id,
+                target_event_id=event_id
+            )
+        except RuntimeError as e:
+            logging.error(f"[AUDIT] Token generation failed - DELETE_TOKEN_SECRET_KEY not configured: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="Token-based deletion is not configured on this server. Contact administrator."
+            )
+        
+        logging.info(f"[AUDIT] Delete intent token issued - Event: {event_id}, League: {league_id}, User: {current_user['uid']}")
+        
+        return {
+            "token": token,
+            "expires_in_minutes": 5,
+            "target_event_id": event_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error issuing delete intent token for {event_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to issue delete intent token")
+
+@router.options('/leagues/{league_id}/events/{event_id}')
+def delete_event_preflight(
+    league_id: str = Path(..., regex=r"^.{1,50}$"), 
+    event_id: str = Path(..., regex=r"^.{1,50}$")
+):
+    """
+    CORS preflight handler for DELETE endpoint.
+    Returns 200 OK to allow browser to proceed with actual DELETE request.
+    CORSMiddleware adds the necessary headers automatically.
+    """
+    return Response(status_code=200)
+
+@router.delete('/leagues/{league_id}/events/{event_id}')
+@write_rate_limit()
+@require_permission("events", "delete", target="league", target_param="league_id")
+def delete_event(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"), 
+    event_id: str = Path(..., regex=r"^.{1,50}$"), 
+    current_user=Depends(require_role("organizer"))
+):
+    """
+    Soft-delete an event (requires organizer role).
+    Event is marked as deleted but retained for 30 days for recovery.
+    Use hard_delete query param to permanently delete (admin only).
+    """
+    try:
+        
+        # CRITICAL SERVER-SIDE VALIDATION: REQUIRED header check (not optional)
+        # This protects against UI drift, client regressions, and malicious calls
+        declared_target_id = request.headers.get("X-Delete-Target-Event-Id")
+        
+        # ENFORCE: Header is REQUIRED for all organizer deletes (not optional)
+        if not declared_target_id:
+            error_msg = f"CRITICAL: Missing deletion target header - Route: {event_id}"
+            logging.error(f"[AUDIT] {error_msg} - League: {league_id}, User: {current_user['uid']}, Reason: X-Delete-Target-Event-Id header missing")
+            
+            # Send to monitoring/Sentry
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_message(
+                    error_msg,
+                    level='error',
+                    extras={
+                        'route_event_id': event_id,
+                        'league_id': league_id,
+                        'user_id': current_user['uid'],
+                        'error': 'Missing X-Delete-Target-Event-Id header'
+                    }
+                )
+            except:
+                pass
+            
+            raise HTTPException(
+                status_code=400, 
+                detail="Missing deletion target validation header (X-Delete-Target-Event-Id). This is required for data integrity."
+            )
+        
+        # ENFORCE: Header must match route parameter (prevent wrong deletion)
+        if declared_target_id != event_id:
+            error_msg = f"CRITICAL: Deletion target mismatch - Route: {event_id}, Declared: {declared_target_id}"
+            logging.error(f"[AUDIT] {error_msg} - League: {league_id}, User: {current_user['uid']}")
+            
+            # Send to monitoring/Sentry
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_message(
+                    error_msg,
+                    level='error',
+                    extras={
+                        'route_event_id': event_id,
+                        'declared_target_id': declared_target_id,
+                        'league_id': league_id,
+                        'user_id': current_user['uid']
+                    }
+                )
+            except:
+                pass
+            
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Deletion target mismatch. Route event_id ({event_id}) does not match declared target ({declared_target_id})"
+            )
+        
+        # OPTIONAL BUT RECOMMENDED: Validate delete intent token (one-time-use)
+        # Token provides additional protection against replay attacks and drift
+        delete_token = request.headers.get("X-Delete-Intent-Token")
+        token_validated = False
+        
+        if delete_token:
+            try:
+                # Validate token claims match request parameters AND mark as used (prevents replay)
+                token_payload = validate_delete_intent_token(
+                    token=delete_token,
+                    expected_user_id=current_user["uid"],
+                    expected_league_id=league_id,
+                    expected_target_event_id=event_id,
+                    mark_as_used=True  # CRITICAL: Mark as used to prevent replay
+                )
+                token_validated = True
+                logging.info(f"[AUDIT] Delete intent token validated and marked as used - Event: {event_id}, jti: {token_payload.get('jti')}, Token issued at: {token_payload.get('issued_at')}")
+            except jwt.ExpiredSignatureError:
+                logging.warning(f"[AUDIT] Expired delete intent token - Event: {event_id}, User: {current_user['uid']}")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Delete intent token has expired. Please restart the deletion process."
+                )
+            except (jwt.InvalidTokenError, ValueError, RuntimeError) as e:
+                logging.error(f"[AUDIT] Invalid delete intent token - Event: {event_id}, User: {current_user['uid']}, Error: {e}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid delete intent token: {str(e)}"
+                )
+        
+        # AUDIT LOG: Deletion attempt initiated (with target validation confirmation)
+        logging.warning(f"[AUDIT] Event deletion initiated - Event: {event_id}, Declared Target: {declared_target_id}, League: {league_id}, User: {current_user['uid']}, Target Match: {declared_target_id == event_id}, Token Validated: {token_validated}")
+        
+        enforce_event_league_relationship(
+            event_id=event_id,
+            expected_league_id=league_id,
+        )
+        # Verify event exists and belongs to league
+        league_event_ref = db.collection("leagues").document(league_id).collection("events").document(event_id)
+        event_doc = execute_with_timeout(
+            lambda: league_event_ref.get(),
+            timeout=10,
+            operation_name="event verification for deletion"
+        )
+        
+        if not event_doc.exists:
+            # Try top-level collection
+            top_level_event_ref = db.collection("events").document(event_id)
+            event_doc = execute_with_timeout(
+                lambda: top_level_event_ref.get(),
+                timeout=10,
+                operation_name="event verification in global collection"
+            )
+            
+            if not event_doc.exists or event_doc.to_dict().get("league_id") != league_id:
+                raise HTTPException(status_code=404, detail="Event not found")
+        
+        # Check if this is a currently active event by checking for recent activity
+        event_data = event_doc.to_dict()
+        
+        # AUDIT LOG: Event details before deletion
+        logging.info(f"[AUDIT] Event deletion details - Name: {event_data.get('name')}, Date: {event_data.get('date')}, Created: {event_data.get('created_at')}")
+        
+        if event_data.get("live_entry_active", False):
+            logging.warning(f"[AUDIT] Event deletion blocked - Live Entry active for event {event_id}")
+            raise HTTPException(
+                status_code=409, 
+                detail="Cannot delete event while Live Entry is active. Please deactivate Live Entry first."
+            )
+        
+        # SOFT DELETE: Mark as deleted instead of hard-deleting
+        deletion_timestamp = datetime.utcnow().isoformat()
+        soft_delete_data = {
+            "deleted_at": deletion_timestamp,
+            "deleted_by": current_user["uid"],
+            "status": "deleted"
+        }
+        
+        # Update both locations with soft delete marker
+        execute_with_timeout(
+            lambda: league_event_ref.update(soft_delete_data),
+            timeout=10,
+            operation_name="soft delete in league subcollection"
+        )
+        
+        top_level_event_ref = db.collection("events").document(event_id)
+        execute_with_timeout(
+            lambda: top_level_event_ref.update(soft_delete_data),
+            timeout=10,
+            operation_name="soft delete in global collection"
+        )
+        
+        # AUDIT LOG: Deletion completed successfully
+        logging.warning(f"[AUDIT] Event deletion completed - Event: {event_id} ({event_data.get('name')}), League: {league_id}, User: {current_user['uid']}, Timestamp: {deletion_timestamp}")
+        
+        logging.info(f"Soft-deleted event {event_id} from league {league_id}. Will be permanently deleted after 30 days.")
+        return {
+            "message": "Event deleted successfully",
+            "deleted_at": deletion_timestamp,
+            "recovery_window": "30 days",
+            "note": "Event is hidden but can be recovered within 30 days. Contact support for recovery."
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error deleting event {event_id} from league {league_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete event")
+
+
+# --- Combine Lock/Unlock Endpoints ---
+
+class LockCombineRequest(BaseModel):
+    """Request to lock or unlock a combine (event)"""
+    isLocked: bool
+    reason: Optional[str] = None  # Optional reason for audit log
+
+@router.patch('/leagues/{league_id}/events/{event_id}/lock')
+@write_rate_limit()
+@require_permission("events", "update", target="league", target_param="league_id")
+def set_combine_lock_status(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"),
+    event_id: str = Path(..., regex=r"^.{1,50}$"),
+    req: LockCombineRequest = None,
+    current_user=Depends(require_role("organizer"))
+):
+    """
+    Set global combine lock status (isLocked field).
+    
+    When locked:
+    - Only organizers can edit scores, players, or drills
+    - All coaches become read-only regardless of individual canWrite setting
+    - Represents "official end" of combine
+    
+    Only organizers can lock/unlock events.
+    """
+    try:
+        enforce_event_league_relationship(event_id=event_id, expected_league_id=league_id)
+        
+        event_ref = db.collection("leagues").document(league_id).collection("events").document(event_id)
+        event_doc = execute_with_timeout(
+            lambda: event_ref.get(),
+            timeout=5,
+            operation_name="fetch event for lock update"
+        )
+        
+        if not event_doc.exists:
+            logging.error(f"[LOCK] Event {event_id} not found in league {league_id}")
+            raise HTTPException(status_code=404, detail="Event not found")
+        
+        event_data = event_doc.to_dict()
+        current_lock_status = event_data.get("isLocked", False)
+        new_lock_status = req.isLocked
+        
+        logging.info(
+            f"[LOCK] Lock toggle request - Event: {event_id}, League: {league_id}, "
+            f"Current: {current_lock_status}, Requested: {new_lock_status}, User: {current_user['uid']}"
+        )
+        
+        # No-op if already in desired state
+        if current_lock_status == new_lock_status:
+            logging.info(f"[LOCK] No-op - Event {event_id} already in state: {new_lock_status}")
+            return {
+                "isLocked": new_lock_status,
+                "message": f"Event is already {'locked' if new_lock_status else 'unlocked'}",
+                "changed": False
+            }
+        
+        # Update lock status
+        update_data = {
+            "isLocked": new_lock_status,
+            "lock_updated_at": datetime.utcnow().isoformat(),
+            "lock_updated_by": current_user["uid"]
+        }
+        
+        logging.info(f"[LOCK] Updating league subcollection: /leagues/{league_id}/events/{event_id}")
+        execute_with_timeout(
+            lambda: event_ref.update(update_data),
+            timeout=10,
+            operation_name="update combine lock status"
+        )
+        
+        # Also update top-level events collection for consistency
+        top_level_event_ref = db.collection("events").document(event_id)
+        logging.info(f"[LOCK] Updating global collection: /events/{event_id}")
+        execute_with_timeout(
+            lambda: top_level_event_ref.update(update_data),
+            timeout=10,
+            operation_name="update combine lock in global collection"
+        )
+        
+        # Verify the update by reading back
+        verify_doc = execute_with_timeout(
+            lambda: event_ref.get(),
+            timeout=5,
+            operation_name="verify lock update"
+        )
+        verify_data = verify_doc.to_dict()
+        verify_lock_status = verify_data.get("isLocked", False)
+        
+        if verify_lock_status != new_lock_status:
+            logging.error(
+                f"[LOCK] VERIFICATION FAILED - Event {event_id} shows isLocked={verify_lock_status}, "
+                f"expected {new_lock_status}. Update may not have persisted!"
+            )
+        else:
+            logging.info(f"[LOCK] Verification successful - Event {event_id} isLocked={verify_lock_status}")
+        
+        # Audit log
+        action = "LOCKED" if new_lock_status else "UNLOCKED"
+        reason_text = f" (Reason: {req.reason})" if req.reason else ""
+        logging.warning(
+            f"[AUDIT] Combine {action} - Event: {event_id} ({event_data.get('name')}), "
+            f"League: {league_id}, User: {current_user['uid']}, "
+            f"Timestamp: {update_data['lock_updated_at']}{reason_text}"
+        )
+        
+        return {
+            "isLocked": new_lock_status,
+            "message": f"Combine {'locked' if new_lock_status else 'unlocked'} successfully",
+            "changed": True,
+            "lock_updated_at": update_data["lock_updated_at"],
+            "verified": verify_lock_status == new_lock_status
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error updating combine lock status for event {event_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update combine lock status")
+
+
+# --- Custom Drill Endpoints ---
+
+def check_event_unlocked(event_id: str):
+    """
+    Helper to ensure event allows drill configuration changes.
+    Checks live_entry_active (not isLocked) - custom drills lock when live entry starts.
+    
+    For general write operations (scores, players), use lock_validation.check_write_permission instead.
+    """
+    event_ref = db.collection("events").document(event_id)
+    event_doc = execute_with_timeout(
+        lambda: event_ref.get(),
+        timeout=5,
+        operation_name="check event lock status"
+    )
+    
+    if not event_doc.exists:
+        raise HTTPException(status_code=404, detail="Event not found")
+        
+    if event_doc.to_dict().get("live_entry_active", False):
+        raise HTTPException(status_code=409, detail="Cannot modify drill configuration after Live Entry has started")
+
+@router.post('/leagues/{league_id}/events/{event_id}/custom-drills')
+@write_rate_limit()
+@require_permission("events", "update", target="league", target_param="league_id")
+def create_custom_drill(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"),
+    event_id: str = Path(..., regex=r"^.{1,50}$"),
+    req: CustomDrillCreateRequest = None,
+    current_user=Depends(require_role("organizer"))
+):
+    try:
+        enforce_event_league_relationship(event_id=event_id, expected_league_id=league_id)
+        check_event_unlocked(event_id)
+        
+        if req.min_val >= req.max_val:
+            raise HTTPException(status_code=400, detail="Minimum value must be less than maximum value")
+            
+        # Check for name uniqueness (case-insensitive)
+        drills_ref = db.collection("events").document(event_id).collection("custom_drills")
+        existing_drills = execute_with_timeout(
+            lambda: list(drills_ref.stream()),
+            timeout=10
+        )
+        
+        for d in existing_drills:
+            if d.to_dict().get("name", "").lower() == req.name.lower():
+                raise HTTPException(status_code=400, detail="A drill with this name already exists in this event")
+        
+        new_drill_ref = drills_ref.document()
+        drill_data = req.dict()
+        drill_data.update({
+            "id": new_drill_ref.id,
+            "event_id": event_id,
+            "created_at": datetime.utcnow().isoformat(),
+            "created_by": current_user["uid"]
+        })
+        
+        execute_with_timeout(
+            lambda: new_drill_ref.set(drill_data),
+            timeout=10,
+            operation_name="create custom drill"
+        )
+        
+        logging.info(f"Created custom drill {new_drill_ref.id} for event {event_id}")
+        return drill_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error creating custom drill for event {event_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create custom drill")
+
+@router.get('/leagues/{league_id}/events/{event_id}/custom-drills')
+@read_rate_limit()
+@require_permission("events", "read", target="league", target_param="league_id")
+def list_custom_drills(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"),
+    event_id: str = Path(..., regex=r"^.{1,50}$"),
+    current_user=Depends(get_current_user)
+):
+    try:
+        enforce_event_league_relationship(event_id=event_id, expected_league_id=league_id)
+        
+        # Get lock status
+        event_ref = db.collection("events").document(event_id)
+        event_doc = execute_with_timeout(lambda: event_ref.get(), timeout=5)
+        is_locked = False
+        if event_doc.exists:
+            is_locked = event_doc.to_dict().get("live_entry_active", False)
+            
+        drills_ref = db.collection("events").document(event_id).collection("custom_drills")
+        drills_stream = execute_with_timeout(
+            lambda: list(drills_ref.order_by("created_at").stream()),
+            timeout=10,
+            operation_name="list custom drills"
+        )
+        
+        drills = []
+        for d in drills_stream:
+            data = d.to_dict()
+            data["id"] = d.id
+            data["is_locked"] = is_locked
+            drills.append(data)
+            
+        return {"custom_drills": drills}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error listing custom drills for event {event_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list custom drills")
+
+@router.put('/leagues/{league_id}/events/{event_id}/custom-drills/{drill_id}')
+@write_rate_limit()
+@require_permission("events", "update", target="league", target_param="league_id")
+def update_custom_drill(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"),
+    event_id: str = Path(..., regex=r"^.{1,50}$"),
+    drill_id: str = Path(..., regex=r"^.{1,50}$"),
+    req: CustomDrillUpdateRequest = None,
+    current_user=Depends(require_role("organizer"))
+):
+    try:
+        enforce_event_league_relationship(event_id=event_id, expected_league_id=league_id)
+        check_event_unlocked(event_id)
+        
+        drill_ref = db.collection("events").document(event_id).collection("custom_drills").document(drill_id)
+        drill_doc = execute_with_timeout(lambda: drill_ref.get(), timeout=5)
+        
+        if not drill_doc.exists:
+            raise HTTPException(status_code=404, detail="Drill not found")
+            
+        update_data = req.dict(exclude_unset=True)
+        if not update_data:
+            return drill_doc.to_dict()
+            
+        # Validate min/max if both present
+        current_data = drill_doc.to_dict()
+        new_min = update_data.get("min_val", current_data.get("min_val"))
+        new_max = update_data.get("max_val", current_data.get("max_val"))
+        
+        if new_min >= new_max:
+             raise HTTPException(status_code=400, detail="Minimum value must be less than maximum value")
+             
+        execute_with_timeout(
+            lambda: drill_ref.update(update_data),
+            timeout=10,
+            operation_name="update custom drill"
+        )
+        
+        updated_doc = execute_with_timeout(lambda: drill_ref.get(), timeout=5)
+        return updated_doc.to_dict()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error updating custom drill {drill_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update custom drill")
+
+@router.delete('/leagues/{league_id}/events/{event_id}/custom-drills/{drill_id}')
+@write_rate_limit()
+@require_permission("events", "update", target="league", target_param="league_id")
+def delete_custom_drill(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"),
+    event_id: str = Path(..., regex=r"^.{1,50}$"),
+    drill_id: str = Path(..., regex=r"^.{1,50}$"),
+    current_user=Depends(require_role("organizer"))
+):
+    try:
+        enforce_event_league_relationship(event_id=event_id, expected_league_id=league_id)
+        check_event_unlocked(event_id)
+        
+        drill_ref = db.collection("events").document(event_id).collection("custom_drills").document(drill_id)
+        
+        # Check existence first
+        drill_doc = execute_with_timeout(lambda: drill_ref.get(), timeout=5)
+        if not drill_doc.exists:
+            raise HTTPException(status_code=404, detail="Drill not found")
+
+        # CRITICAL DATA INTEGRITY: Check if any scores exist for this drill
+        # We check the 'players' collection because create_drill_result denormalizes 
+        # the score onto the player document using the drill ID as the field key.
+        # This allows us to use a simple subcollection query (supported by default indexes)
+        # rather than a complex Collection Group Query.
+        scores_query = (
+            db.collection("events").document(event_id).collection("players")
+            .where(drill_id, ">", float("-inf")) # Checks if field exists and has a value
+            .limit(1)
+        )
+        
+        existing_scores = execute_with_timeout(
+            lambda: list(scores_query.stream()), 
+            timeout=8,
+            operation_name="check existing scores"
+        )
+        
+        if len(existing_scores) > 0:
+            logging.warning(f"Attempted to delete custom drill {drill_id} (event {event_id}) which has existing scores. Blocked.")
+            raise HTTPException(
+                status_code=409, 
+                detail="Cannot delete this drill because player scores have already been recorded for it. Please clear the scores first or use Reset Event."
+            )
+
+        execute_with_timeout(
+            lambda: drill_ref.delete(),
+            timeout=10,
+            operation_name="delete custom drill"
+        )
+        
+        logging.info(f"Deleted custom drill {drill_id} from event {event_id}")
+        return Response(status_code=204)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error deleting custom drill {drill_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete custom drill")
+
+@router.get('/leagues/{league_id}/events/{event_id}/schema')
+@read_rate_limit()
+@require_permission("events", "read", target="league", target_param="league_id")
+def get_league_event_schema_endpoint(
+    request: Request,
+    league_id: str = Path(..., regex=r"^.{1,50}$"),
+    event_id: str = Path(..., regex=r"^.{1,50}$"),
+    current_user=Depends(get_current_user)
+):
+    """
+    Get the drill schema for a specific league event.
+    Prefer this endpoint over /events/{id}/schema as it reliably finds events in subcollections.
+    """
+    try:
+        enforce_event_league_relationship(event_id=event_id, expected_league_id=league_id)
+
+        # Pass league_id to find event in subcollection
+        schema = get_event_schema(event_id, league_id=league_id)
+        if not schema:
+            raise HTTPException(status_code=404, detail="Event schema not found")
+
+        # LOGGING: Custom drill count and keys for debugging import issues
+        custom_drills = [d for d in schema.drills if d.category == "custom" or len(d.key) >= 20] 
+        logging.warning(f"[SCHEMA_DEBUG] League Schema response for {event_id}: {len(schema.drills)} total drills ({len(custom_drills)} custom). Custom keys: {[d.key for d in custom_drills]}")
+
+        return {
+            "id": schema.id,
+            "name": schema.name,
+            "sport": schema.sport,
+            "drills": [
+                {
+                    "key": drill.key,
+                    "label": drill.label,
+                    "unit": drill.unit,
+                    "min_value": drill.min_value,
+                    "max_value": drill.max_value,
+                    "default_weight": drill.default_weight,
+                    "lower_is_better": drill.lower_is_better,
+                    "category": drill.category,
+                    "description": drill.description
+                }
+                for drill in schema.drills
+            ],
+            "presets": [
+                {
+                    "id": preset.id,
+                    "name": preset.name,
+                    "description": preset.description,
+                    "weights": preset.weights
+                }
+                for preset in schema.presets
+            ]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting event schema for {event_id} in league {league_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get event schema")
+
+@router.get('/events/{event_id}/schema')
+@read_rate_limit()
+@require_permission("events", "read", target="event", target_param="event_id")
+def get_event_schema_endpoint(
+    request: Request,
+    event_id: str = Path(..., regex=r"^.{1,50}$"),
+    current_user=Depends(get_current_user)
+):
+    """
+    Get the drill schema for an event, including all available drills.
+    Used by frontend for CSV import field mapping.
+    """
+    try:
+        enforce_event_league_relationship(event_id=event_id)
+
+        schema = get_event_schema(event_id)
+        if not schema:
+            raise HTTPException(status_code=404, detail="Event schema not found")
+
+        # LOGGING: Custom drill count and keys for debugging import issues
+        custom_drills = [d for d in schema.drills if d.category == "custom" or len(d.key) >= 20] 
+        logging.warning(f"[SCHEMA_DEBUG] Global Schema response for {event_id}: {len(schema.drills)} total drills ({len(custom_drills)} custom). Custom keys: {[d.key for d in custom_drills]}")
+
+        return {
+            "id": schema.id,
+            "name": schema.name,
+            "sport": schema.sport,
+            "drills": [
+                {
+                    "key": drill.key,
+                    "label": drill.label,
+                    "unit": drill.unit,
+                    "min_value": drill.min_value,
+                    "max_value": drill.max_value,
+                    "default_weight": drill.default_weight,
+                    "lower_is_better": drill.lower_is_better,
+                    "category": drill.category,
+                    "description": drill.description
+                }
+                for drill in schema.drills
+            ],
+            "presets": [
+                {
+                    "id": preset.id,
+                    "name": preset.name,
+                    "description": preset.description,
+                    "weights": preset.weights
+                }
+                for preset in schema.presets
+            ]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting event schema for {event_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get event schema")

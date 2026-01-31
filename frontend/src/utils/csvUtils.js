@@ -1,0 +1,513 @@
+// CSV parsing and validation utilities
+
+// Required: first_name, last_name
+export const REQUIRED_HEADERS = ["first_name", "last_name"];
+
+// Optional columns supported by backend
+// CRITICAL: Backend canonical field is "number" (not "jersey_number")
+// Using "number" as canonical ensures payload matches backend storage
+export const OPTIONAL_HEADERS = ["age_group", "number", "external_id", "team_name", "position", "notes"];
+export const ALL_HEADERS = [...REQUIRED_HEADERS, ...OPTIONAL_HEADERS];
+
+// Function to get drill headers from schema (called with event schema)
+export function getDrillHeaders(drillDefinitions = []) {
+  return drillDefinitions.map(drill => drill.key);
+}
+
+// Function to get all headers including drills
+export function getAllHeadersWithDrills(drillDefinitions = []) {
+  return [...REQUIRED_HEADERS, ...OPTIONAL_HEADERS, ...getDrillHeaders(drillDefinitions)];
+}
+
+export const SAMPLE_ROWS = [
+  ["John", "Smith", "12U", "12"],
+  ["Emma", "Johnson", "Mighty Mites", "25"],
+  ["Michael", "Davis", "", ""]
+];
+
+// Synonyms for common headers to improve auto-mapping & detection - lazy initialized to avoid TDZ
+let headerSynonymsCache = null;
+
+function getHeaderSynonyms() {
+  if (!headerSynonymsCache) {
+    headerSynonymsCache = {
+      first_name: ['first_name', 'first', 'firstname', 'first name', 'fname', 'given', 'player first', 'player_first', 'player first name', 'given name'],
+      last_name: ['last_name', 'last', 'lastname', 'last name', 'lname', 'surname', 'player last', 'player_last', 'player last name', 'family name', 'last name'],
+      age_group: ['age_group', 'age', 'agegroup', 'group', 'division', 'grade', 'team age', 'age grp', 'class', 'squad'],
+      number: ['number', 'jersey_number', 'player_number', '#', 'jersey', 'jersey number', 'jersey #', 'uniform', 'uniform number', 'player #', 'player number', 'no', 'no.', 'uniform #', 'num', 'athlete_number', 'athlete number', 'athlete #'],
+      external_id: ['external_id', 'external', 'playerid', 'player id', 'id'],
+      team_name: ['team_name', 'team', 'squad', 'club'],
+      position: ['position', 'pos'],
+      notes: ['notes', 'note', 'comments', 'comment', 'remarks'],
+      // Common drill synonyms - these will be extended based on schema
+      '40m_dash': ['40m_dash', '40m dash', '40 yard dash', '40-yard dash', '40yd dash', '40-dash', '40dash', 'sprint', 'speed', '40yd', '40 yard', '40 dash', '40'],
+      'vertical_jump': ['vertical_jump', 'vertical jump', 'vert jump', 'vj', 'jump', 'vertical', 'vert'],
+      'catching': ['catching', 'catch', 'reception', 'receiving', 'hands'],
+      'throwing': ['throwing', 'throw', 'passing', 'pass'],
+      'agility': ['agility', 'agile', 'cone drill', 'cones', 'weave', 'ladder'],
+      'lane_agility': ['lane_agility', 'lane agility', 'lane', 'basketball agility', 'bb agility'],
+      'free_throws': ['free_throws', 'free throws', 'ft', 'free throw %', 'free throw percentage', 'free_throw_pct', 'throwing'],
+      'three_point': ['three_point', 'three point', '3pt', '3-point', '3 point', '3 pt', '3-pt', 'three pointer', 'three_pointer', '3pt shooting', '3pt spot shooting', 'spot shooting', '3 point made'],
+      'dribbling': ['dribbling', 'dribble', 'ball handling', 'handles', 'dribbling skill'],
+      'sprint_60': ['sprint_60', '60 yard sprint', '60-yard sprint', '60 yd sprint', '60yd sprint', '60yard', '60 yard', '60-yd', '60yd', '60 sprint', 'sixty yard', 'sixty yard sprint', '60 yd dash', '60-yd dash', '60yd dash', '60 yard dash'],
+      'exit_velocity': ['exit_velocity', 'exit velocity', 'bat speed', 'swing speed', 'exit velo'],
+      'throwing_velocity': ['throwing_velocity', 'throwing velocity', 'arm strength', 'arm speed', 'throw velo'],
+      'fielding_accuracy': ['fielding_accuracy', 'fielding accuracy', 'fielding', 'defense', 'fielding skill'],
+      'pop_time': ['pop_time', 'pop time', 'catcher pop', 'c pop time'],
+      'sprint_100': ['sprint_100', '100m sprint', '100 meter sprint', '100m', '100 sprint'],
+      'sprint_400': ['sprint_400', '400m sprint', '400 meter sprint', '400m', '400 sprint'],
+      'long_jump': ['long_jump', 'long jump', 'broad jump', 'lj'],
+      'shot_put': ['shot_put', 'shot put', 'shotput', 'sp'],
+      'mile_time': ['mile_time', 'mile time', 'mile run', 'mile'],
+      'approach_jump': ['approach_jump', 'approach jump', 'block jump'],
+      'serving_accuracy': ['serving_accuracy', 'serving accuracy', 'serve accuracy', 'serving'],
+      'standing_reach': ['standing_reach', 'standing reach', 'reach', 'standing'],
+      'pro_lane_shuttle': ['pro_lane_shuttle', 'pro lane shuttle', 'lane shuttle', 'pro lane', 'shuttle'],
+      'three_quarter_court_sprint': ['three_quarter_court_sprint', '3/4 court sprint', 'three quarter court sprint', 'court sprint', '3/4 sprint', '3/4 court'],
+      'ball_control': ['ball_control', 'ball control', 'touch', 'first touch'],
+      'passing_accuracy': ['passing_accuracy', 'passing accuracy', 'passing', 'pass accuracy'],
+      'shooting_power': ['shooting_power', 'shooting power', 'shot power', 'shooting']
+    };
+  }
+  return headerSynonymsCache;
+}
+
+function normalizeHeader(header) {
+  return String(header || '')
+    .toLowerCase()
+    // Remove units in parentheses (e.g., "(sec)", "(%)", "(in)")
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Additional normalization for more aggressive matching of custom drills
+// This version collapses more variations: "3-Cone" = "3 cone" = "3cone"
+function normalizeHeaderAggressive(header) {
+  return String(header || '')
+    .toLowerCase()
+    // Remove units
+    .replace(/\s*\([^)]*\)\s*/g, '')
+    // Remove common words that don't affect meaning
+    .replace(/\b(drill|test|score)\b/g, '')
+    // Replace all non-alphanumeric with nothing (more aggressive)
+    .replace(/[^a-z0-9]/g, '')
+    .trim();
+}
+
+// Check if headers indicate header-based format
+function hasValidHeaders(headers) {
+  const normalizedHeaders = headers.map((h) => normalizeHeader(h));
+  const synonyms = getHeaderSynonyms();
+  return REQUIRED_HEADERS.every((required) => {
+    const candidates = synonyms[required] || [required];
+    return candidates.some((syn) => normalizedHeaders.some((header) => header === normalizeHeader(syn) || header.includes(normalizeHeader(syn))));
+  });
+}
+
+// Parse CSV text into headers and rows with smart format detection
+export function parseCsv(text) {
+  const lines = text.split('\n').filter(line => line.trim() !== '');
+  if (lines.length === 0) return { headers: [], rows: [], mappingType: 'none' };
+  
+  const firstLineValues = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+  const dataLines = lines.slice(1);
+  
+  // Detect if first line contains headers or data
+  const isHeaderBased = hasValidHeaders(firstLineValues);
+  
+  let headers, rows, mappingType;
+  
+  if (isHeaderBased) {
+    // Header-based parsing (current behavior)
+    headers = firstLineValues;
+    mappingType = 'header-based';
+    rows = dataLines.map(line => {
+      const values = line.split(',').map(v => v.trim().replace(/"/g, ''));
+      const row = {};
+      headers.forEach((header, i) => {
+        row[header] = values[i] || '';
+      });
+      // Backward compatibility: support 'number' -> 'jersey_number'
+      if (row.number && !row.jersey_number) {
+        row.jersey_number = row.number;
+        delete row.number;
+      }
+      return row;
+    });
+  } else {
+    // Positional-based parsing (new feature)
+    mappingType = 'positional-based';
+    headers = ['first_name', 'last_name', 'age_group', 'jersey_number']; // Standard headers for compatibility
+    
+    // Include first line as data since it's not headers
+    const allDataLines = [lines[0], ...dataLines];
+    rows = allDataLines.map(line => {
+      const values = line.split(',').map(v => v.trim().replace(/"/g, ''));
+      return {
+        first_name: values[0] || '',
+        last_name: values[1] || '',
+        age_group: values[2] || '',
+        jersey_number: values[3] || ''
+      };
+    });
+  }
+  
+  return { headers, rows, mappingType };
+}
+
+// Analyze columns to detect if they are numeric
+export function detectColumnTypes(headers, rows) {
+  const columnTypes = {};
+  const SAMPLE_SIZE = 50; // Check first 50 rows
+  
+  headers.forEach(header => {
+    let numericCount = 0;
+    let totalCount = 0;
+    
+    for (let i = 0; i < Math.min(rows.length, SAMPLE_SIZE); i++) {
+      const val = rows[i][header];
+      if (val && val.trim() !== '') {
+        totalCount++;
+        if (!isNaN(Number(val.trim()))) {
+          numericCount++;
+        }
+      }
+    }
+    
+    // If >80% of non-empty values are numeric, consider it numeric
+    if (totalCount > 0 && (numericCount / totalCount) > 0.8) {
+      columnTypes[header] = 'numeric';
+    } else {
+      columnTypes[header] = 'text';
+    }
+  });
+  
+  return columnTypes;
+}
+
+// Validate a single CSV row
+export function validateRow(row, drillDefinitions = []) {
+  const warnings = [];
+
+  // Check required fields
+  if (!row.first_name || row.first_name.trim() === '') {
+    warnings.push('Missing first name');
+  }
+  if (!row.last_name || row.last_name.trim() === '') {
+    warnings.push('Missing last name');
+  }
+
+  // Validate jersey number if provided (will be auto-assigned if blank before upload)
+  if (row.jersey_number && row.jersey_number.trim() !== '' && isNaN(Number(row.jersey_number))) {
+    warnings.push('Invalid player_number (must be numeric)');
+  }
+
+  // Validate drill scores if provided
+  drillDefinitions.forEach(drill => {
+    const drillValue = row[drill.key];
+    if (drillValue && drillValue.trim() !== '') {
+      const numValue = Number(drillValue);
+      if (isNaN(numValue)) {
+        warnings.push(`Invalid ${drill.label} score (must be numeric)`);
+      } else {
+        // Check range if defined
+        if (drill.min_value !== undefined && numValue < drill.min_value) {
+          warnings.push(`${drill.label} score ${numValue} below minimum (${drill.min_value})`);
+        }
+        if (drill.max_value !== undefined && numValue > drill.max_value) {
+          warnings.push(`${drill.label} score ${numValue} above maximum (${drill.max_value})`);
+        }
+      }
+    }
+  });
+
+  // Create combined name for display
+  const firstName = (row.first_name || '').trim();
+  const lastName = (row.last_name || '').trim();
+  const name = firstName && lastName ? `${firstName} ${lastName}` : '';
+
+  return {
+    ...row,
+    name,
+    warnings,
+    isValid: warnings.length === 0 && name !== ''
+  };
+}
+
+/* Note: Player numbering is now handled by utils/playerNumbering.js 
+   which provides age-group-based numbering (e.g., 12U players get 1201, 1202, etc.)
+   This prevents conflicts and makes player identification easier during combines. */
+
+// Enhanced header validation that supports both formats
+export function validateHeaders(headers, mappingType = 'header-based') {
+  const errors = [];
+
+  if (mappingType === 'header-based') {
+    // Traditional header validation
+    const normalizedHeaders = headers.map((header) => normalizeHeader(header));
+    const synonyms = getHeaderSynonyms();
+    const missingHeaders = REQUIRED_HEADERS.filter((required) => {
+      const candidates = synonyms[required] || [required];
+      return !candidates.some((candidate) =>
+        normalizedHeaders.includes(normalizeHeader(candidate))
+      );
+    });
+
+    if (missingHeaders.length > 0) {
+      errors.push(`Missing required headers: ${missingHeaders.join(", ")}. Headers must include: ${REQUIRED_HEADERS.join(", ")}`);
+    }
+  } else if (mappingType === 'positional-based') {
+    // Positional validation - no header errors since we're using position mapping
+    // This is intentionally empty since positional mapping doesn't require specific headers
+  }
+
+  return errors;
+}
+
+// New function to get user-friendly mapping description
+export function getMappingDescription(mappingType) {
+  switch (mappingType) {
+    case 'header-based':
+      return 'Using header names to map columns (first_name, last_name, age_group)';
+    case 'positional-based':
+      return 'Using column positions: A=First Name, B=Last Name, C=Age Group';
+    default:
+      return 'Unknown mapping type';
+  }
+} 
+
+// ---- Mapping helpers: guess and apply user-selected mappings ----
+
+function calculateMatchScore(header, key, synonyms) {
+  const normHeader = normalizeHeader(header);
+  const normHeaderAggressive = normalizeHeaderAggressive(header);
+  
+  // CRITICAL FIX: Prevent cross-category matches (name vs number)
+  // If header contains "name" and key is "number", immediately return 0
+  const headerLower = header.toLowerCase();
+  if (headerLower.includes('name') && key === 'number') {
+    return 0; // Block player_name from matching to number field
+  }
+  // Conversely, if header contains "number" and key is name-related, block it
+  if ((headerLower.includes('number') || headerLower === '#' || headerLower === 'no') && 
+      (key === 'first_name' || key === 'last_name')) {
+    return 0; // Block player_number from matching to name fields
+  }
+  
+  // 1. Exact Key Match (Highest confidence)
+  if (normHeader === normalizeHeader(key)) return 100;
+  if (normHeaderAggressive === normalizeHeaderAggressive(key)) return 95;
+  
+  // 2. Synonym Matches
+  for (const syn of synonyms) {
+    const normSyn = normalizeHeader(syn);
+    const normSynAggressive = normalizeHeaderAggressive(syn);
+    
+    // EXACT synonym match - BOOST score significantly to beat partial matches
+    if (normHeader === normSyn) return 95; // Increased from 90 to 95
+    
+    // Aggressive match (handles "3-Cone" = "3 Cone" = "3cone")
+    if (normHeaderAggressive === normSynAggressive && normSynAggressive.length > 2) return 90; // Increased from 85
+    
+    // Header contains synonym (Partial match) - PENALIZE to prevent false matches
+    // We prioritize longer synonyms to avoid "Throw" matching "Free Throw"
+    if (normHeader.includes(normSyn) && normSyn.length > 2) {
+      // Score based on specificity (length of synonym relative to header)
+      const specificity = normSyn.length / normHeader.length;
+      // REDUCED score range from 50-80 to 30-60 to penalize partial matches
+      return 30 + (specificity * 30); // 30-60 range (was 50-80)
+    }
+    
+    // Aggressive partial match as last resort - FURTHER PENALIZED
+    if (normHeaderAggressive.includes(normSynAggressive) && normSynAggressive.length > 3) {
+      const specificity = normSynAggressive.length / normHeaderAggressive.length;
+      // REDUCED score range from 40-60 to 20-40
+      return 20 + (specificity * 20); // 20-40 range (was 40-60)
+    }
+  }
+  
+  return 0;
+}
+
+// Create a suggested mapping from arbitrary CSV headers to our canonical fields
+// Returns { mapping: {}, confidence: {} } where confidence is 'high', 'medium', 'low'
+export function generateDefaultMapping(headers = [], drillDefinitions = []) {
+  const mapping = {};
+  const confidence = {};
+  
+  const allKeys = [...REQUIRED_HEADERS, ...OPTIONAL_HEADERS];
+  const drillKeys = drillDefinitions.map(drill => drill.key);
+  allKeys.push(...drillKeys);
+  
+  console.log("[csvUtils] generateDefaultMapping called with:", {
+    headers,
+    drillCount: drillDefinitions.length,
+    drillKeys,
+    drillLabels: drillDefinitions.map(d => d.label || d.name)
+  });
+  
+  const synonyms = getHeaderSynonyms();
+  
+  // CRITICAL FIX: Add drill labels as synonyms for each drill key
+  // This enables mapping CSV headers like "Bench Press" to custom drill keys like "x7hG4kL9mN2pQ8vW"
+  drillDefinitions.forEach(drill => {
+    if (!synonyms[drill.key]) {
+      synonyms[drill.key] = [];
+    }
+    
+    // Add the drill label as primary synonym
+    const label = drill.label || drill.name;
+    if (label) {
+      synonyms[drill.key].push(label);
+      
+      // Generate common variations of the label for better matching
+      const variations = [];
+      
+      // Add version without spaces: "Three Cone" -> "ThreeCone"
+      variations.push(label.replace(/\s+/g, ''));
+      
+      // Add version with underscores: "Three Cone" -> "three_cone"
+      variations.push(label.toLowerCase().replace(/\s+/g, '_'));
+      
+      // Add version with hyphens: "Three Cone" -> "three-cone"
+      variations.push(label.toLowerCase().replace(/\s+/g, '-'));
+      
+      // Add version with just spaces collapsed: "Three  Cone" -> "Three Cone"
+      variations.push(label.replace(/\s+/g, ' ').trim());
+      
+      // Add version without punctuation: "3-Cone Drill" -> "3 Cone Drill"
+      variations.push(label.replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim());
+      
+      // Add lowercase versions of all variations
+      variations.forEach(v => {
+        const lower = v.toLowerCase();
+        if (!synonyms[drill.key].includes(v)) {
+          synonyms[drill.key].push(v);
+        }
+        if (!synonyms[drill.key].includes(lower)) {
+          synonyms[drill.key].push(lower);
+        }
+      });
+    }
+    
+    // Ensure the key itself is in the synonyms
+    if (!synonyms[drill.key].includes(drill.key)) {
+      synonyms[drill.key].push(drill.key);
+    }
+    
+    // Add any explicitly defined aliases if they exist
+    if (drill.aliases && Array.isArray(drill.aliases)) {
+      drill.aliases.forEach(alias => {
+        if (alias && !synonyms[drill.key].includes(alias)) {
+          synonyms[drill.key].push(alias);
+        }
+      });
+    }
+  });
+  
+  // DEBUG: Log synonyms for custom drills to verify they were added
+  console.log("[csvUtils] Generated synonyms for drills:", 
+    Object.fromEntries(
+      drillKeys.map(key => [key, synonyms[key] || []])
+    )
+  );
+  
+  // DEBUG: Log all drills from definitions for verification
+  console.log("[csvUtils] Drill definitions:", drillDefinitions.map(d => ({
+    key: d.key,
+    label: d.label || d.name,
+    unit: d.unit
+  })));
+  
+  const usedHeaders = new Set();
+  
+  // Calculate all possible matches with scores
+  const allMatches = [];
+  
+  allKeys.forEach(key => {
+    const keySynonyms = synonyms[key] || [key];
+    headers.forEach(header => {
+      const score = calculateMatchScore(header, key, keySynonyms);
+      if (score > 0) {
+        allMatches.push({ key, header, score });
+      }
+      // DEBUG: Log player_number specifically
+      if (header === 'player_number' || key === 'jersey_number') {
+        console.log(`[csvUtils] Matching header="${header}" with key="${key}":`, {
+          score,
+          synonyms: keySynonyms.slice(0, 10) // Show first 10 synonyms
+        });
+      }
+    });
+  });
+  
+  // DEBUG: Log top matches for each header
+  console.log("[csvUtils] Match scores:", 
+    headers.map(header => ({
+      header,
+      matches: allMatches
+        .filter(m => m.header === header)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3)
+        .map(m => ({ key: m.key, score: m.score }))
+    }))
+  );
+  
+  // Sort matches by score (descending) to prioritize best matches
+  allMatches.sort((a, b) => b.score - a.score);
+  
+  // Assign mappings greedily (cross-category guards now in calculateMatchScore)
+  allMatches.forEach(({ key, header, score }) => {
+    // If key is already mapped or header is already used, skip
+    if (!mapping[key] && !usedHeaders.has(header)) {
+      mapping[key] = header;
+      usedHeaders.add(header);
+      
+      // Determine confidence level (adjusted for new scoring)
+      if (score >= 90) confidence[key] = 'high';
+      else if (score >= 60) confidence[key] = 'medium';
+      else confidence[key] = 'low';
+    }
+  });
+  
+  // DEBUG: Log final mapping results
+  console.log("[csvUtils] Final mapping:", {
+    mapping,
+    confidence,
+    unmappedHeaders: headers.filter(h => !usedHeaders.has(h)),
+    unmappedDrills: drillKeys.filter(k => !mapping[k])
+  });
+  
+  return { mapping, confidence };
+}
+
+// Apply a mapping from arbitrary headers to canonical fields
+export function applyMapping(rows = [], mapping = {}, drillDefinitions = []) {
+  const output = [];
+  const canonicalKeys = [...REQUIRED_HEADERS, ...OPTIONAL_HEADERS];
+  const drillKeys = drillDefinitions.map(drill => drill.key);
+  canonicalKeys.push(...drillKeys);
+
+  for (const originalRow of rows) {
+    const row = {};
+    canonicalKeys.forEach(key => {
+      const source = mapping[key];
+      if (source && source !== '__ignore__') {
+        row[key] = originalRow[source] ?? '';
+      } else if (originalRow[key] != null) {
+        // Already canonical from positional-based parsing
+        row[key] = originalRow[key];
+      } else {
+        row[key] = '';
+      }
+    });
+    // Backward compatibility: support legacy 'number' header -> jersey_number
+    if (!row.jersey_number && originalRow.number) {
+      row.jersey_number = originalRow.number;
+    }
+    output.push(row);
+  }
+  return output;
+}
