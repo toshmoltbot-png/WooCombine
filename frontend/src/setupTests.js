@@ -1,4 +1,14 @@
-import '@testing-library/jest-dom';
+import '@testing-library/jest-dom/vitest';
+import { vi } from 'vitest';
+
+// Mock localStorage
+const localStorageMock = {
+  getItem: vi.fn(() => null),
+  setItem: vi.fn(),
+  removeItem: vi.fn(),
+  clear: vi.fn(),
+};
+global.localStorage = localStorageMock;
 
 // Polyfill for TextEncoder/TextDecoder
 import { TextEncoder, TextDecoder } from 'util';
@@ -7,22 +17,22 @@ global.TextDecoder = TextDecoder;
 
 // Provide a minimal fetch stub for libraries that expect it
 if (!global.fetch) {
-  global.fetch = jest.fn(() => Promise.reject(new Error('fetch not implemented in test env')));
+  global.fetch = vi.fn(() => Promise.reject(new Error('fetch not implemented in test env')));
 }
 
 // Mock Firebase modules
-jest.mock('./firebase', () => ({
+vi.mock('./firebase', () => ({
   auth: {
-    signInWithEmailAndPassword: jest.fn(),
-    createUserWithEmailAndPassword: jest.fn(),
-    signOut: jest.fn(),
-    onAuthStateChanged: jest.fn(),
+    signInWithEmailAndPassword: vi.fn(),
+    createUserWithEmailAndPassword: vi.fn(),
+    signOut: vi.fn(),
+    onAuthStateChanged: vi.fn(),
   },
   db: {},
 }));
 
 // Mock firebase/auth to avoid Node fetch dependency and control auth flow in tests
-jest.mock('firebase/auth', () => {
+vi.mock('firebase/auth', () => {
   return {
     onAuthStateChanged: (_auth, callback) => {
       // Simulate next tick to avoid setState outside act warnings
@@ -30,23 +40,21 @@ jest.mock('firebase/auth', () => {
       // Return unsubscribe function
       return () => {};
     },
-    signOut: jest.fn(),
+    signOut: vi.fn(),
   };
 });
 
 // Mock react-router-dom
-jest.mock('react-router-dom', () => ({
-  BrowserRouter: ({ children }) => children,
-  useNavigate: () => jest.fn(),
-  useLocation: () => ({
-    pathname: '/',
-    search: '',
-    hash: '',
-    state: null,
-  }),
-  Link: ({ children, to }) => <a href={to}>{children}</a>,
-  NavLink: ({ children, to }) => <a href={to}>{children}</a>,
-}));
-
-// Mock environment variables
-process.env.VITE_API_BASE = 'http://localhost:3000/api';
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return {
+    ...actual,
+    useNavigate: () => vi.fn(),
+    useLocation: () => ({
+      pathname: '/',
+      search: '',
+      hash: '',
+      state: null,
+    }),
+  };
+});

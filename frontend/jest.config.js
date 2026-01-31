@@ -1,5 +1,6 @@
 export default {
   testEnvironment: 'jsdom',
+  setupFiles: ['<rootDir>/src/jest.setup.js'],
   setupFilesAfterEnv: ['<rootDir>/src/setupTests.js'],
   moduleNameMapper: {
     '\\.(css|less|scss|sass)$': 'identity-obj-proxy',
@@ -11,7 +12,8 @@ export default {
       presets: [
         ['@babel/preset-env', { targets: { node: 'current' } }],
         ['@babel/preset-react', { runtime: 'automatic' }]
-      ]
+      ],
+      plugins: ['babel-plugin-transform-import-meta']
     }]
   },
   transformIgnorePatterns: ['/node_modules/'],

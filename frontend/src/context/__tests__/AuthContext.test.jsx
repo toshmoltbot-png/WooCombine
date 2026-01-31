@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
 import { BrowserRouter } from 'react-router-dom';
 import { AuthProvider, useAuth } from '../AuthContext';
 import { ToastProvider } from '../ToastContext';

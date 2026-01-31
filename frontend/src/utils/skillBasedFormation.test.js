@@ -1,14 +1,15 @@
+import { describe, it, expect, vi, beforeEach, test } from 'vitest';
 import { createSkillBasedTeams } from './skillBasedFormation';
 import { calculateNormalizedDrillScore } from './optimizedScoring';
 
 // Mock dependencies
-jest.mock('./optimizedScoring', () => ({
-  getCachedDrillRanges: jest.fn(() => ({
+vi.mock('./optimizedScoring', () => ({
+  getCachedDrillRanges: vi.fn(() => ({
     'drill_1': { min: 4, max: 10 },
     'drill_2': { min: 10, max: 20 },
     'drill_3': { min: 0, max: 100 }
   })),
-  calculateNormalizedDrillScore: jest.fn((val, range, key, lowerIsBetter) => {
+  calculateNormalizedDrillScore: vi.fn((val, range, key, lowerIsBetter) => {
     if (val === null || val === undefined) return 0;
     // Simple linear mock: 50 is mid
     return 50 + (val - (range.min + range.max)/2); 
@@ -31,7 +32,7 @@ describe('Skill Based Team Formation', () => {
   ];
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   test('should create specified number of teams', () => {
