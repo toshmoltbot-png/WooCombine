@@ -63,7 +63,7 @@ jobs:
       - name: Lint
         run: npm run lint -- --max-warnings=500 || echo "Lint warnings exceed threshold but continuing"
       - name: Unit tests
-        run: npm test -- --ci --reporters=default --reporters=jest-junit
+        run: npm test
       - name: Build
         run: npm run build
 
