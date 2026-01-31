@@ -207,15 +207,10 @@ export default function SelectRole() {
     setLoading(true);
     
     try {
-      // Save user role via backend API with fallback for Firebase issues
-      try {
-        await api.post('/users/role', {
-          role: roleToSave
-        });
-      } catch (primaryError) {
-        // Fallback endpoint is disabled by default in production for security
-        throw primaryError;
-      }
+      // Save user role via backend API
+      await api.post('/users/role', {
+        role: roleToSave
+      });
       
       // CRITICAL FIX: Call refreshUserRole to transition from ROLE_REQUIRED to READY
       // This ensures proper state machine progression and triggers league fetch

@@ -269,7 +269,6 @@ export function useOptimizedWeights(players = [], drills, presets = {}) {
     
     // Utility functions
     isUpdating: isUpdating.current,
-    setSliderWeights,
     setPersistedWeights,
     setActivePreset
   };

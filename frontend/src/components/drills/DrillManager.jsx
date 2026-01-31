@@ -84,14 +84,10 @@ export default function DrillManager({ event, leagueId, isLiveEntryActive = fals
   const handleDeleteConfirm = async () => {
     if (!drillToDelete) return;
 
-    try {
-      await api.delete(`/leagues/${leagueId}/events/${event.id}/custom-drills/${drillToDelete.id}`);
-      await fetchCustomDrills();
-      onDrillsChanged?.();
-      // Success toast handled by DeleteConfirmModal
-    } catch (error) {
-      throw error; // Let DeleteConfirmModal handle the error display
-    }
+    // Error propagates to DeleteConfirmModal for display
+    await api.delete(`/leagues/${leagueId}/events/${event.id}/custom-drills/${drillToDelete.id}`);
+    await fetchCustomDrills();
+    onDrillsChanged?.();
   };
 
   const handleEdit = (drill) => {

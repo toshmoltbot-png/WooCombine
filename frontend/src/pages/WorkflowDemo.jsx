@@ -1352,17 +1352,6 @@ export default function UnifiedDemo() {
           </div>
         );
     }
-
-    // Fallback for any undefined steps
-    return (
-      <div className="space-y-2">
-        <div className="bg-gradient-to-r from-gray-600 to-gray-700 text-white rounded-lg p-4 text-center">
-          <div className="text-2xl mb-2">{step.icon}</div>
-          <h3 className="text-lg font-bold mb-1">{step.title}</h3>
-          <p className="text-sm text-gray-100">{step.desc}</p>
-        </div>
-      </div>
-    );
   };
 
   return (

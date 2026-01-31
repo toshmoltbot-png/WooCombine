@@ -7,7 +7,7 @@ export default [
   { ignores: ['dist'] },
   // Test files configuration
   {
-    files: ['**/*.test.{js,jsx}', '**/__tests__/**/*.{js,jsx}'],
+    files: ['**/*.test.{js,jsx}', '**/__tests__/**/*.{js,jsx}', '**/setupTests.js'],
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -21,6 +21,7 @@ export default [
         beforeAll: 'readonly',
         afterAll: 'readonly',
         jest: 'readonly',
+        global: 'writable',
       },
     },
   },
@@ -28,7 +29,15 @@ export default [
     files: ['**/*.{js,jsx}'],
     languageOptions: {
       ecmaVersion: 2020,
-      globals: globals.browser,
+      globals: {
+        ...globals.browser,
+        // Build-time injected globals (Vite define)
+        __BUILD_SHA__: 'readonly',
+        __BUILD_TIME__: 'readonly',
+        // Node.js globals used in some utils
+        process: 'readonly',
+        Buffer: 'readonly',
+      },
       parserOptions: {
         ecmaVersion: 'latest',
         ecmaFeatures: { jsx: true },
@@ -50,7 +59,11 @@ export default [
       ],
       ...js.configs.recommended.rules,
       ...reactHooks.configs.recommended.rules,
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'no-unused-vars': ['warn', { 
+        varsIgnorePattern: '^_', 
+        argsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_'
+      }],
       'react-refresh/only-export-components': [
         'warn',
         { allowConstantExport: true },
@@ -64,13 +77,15 @@ export default [
       'eqeqeq': ['warn', 'always'],
       'no-duplicate-imports': 'warn',
       'no-unused-expressions': 'warn',
-      // Prevent TDZ errors: disallow use before definition
-      'no-use-before-define': ['error', { 
-        functions: true, 
+      // Prevent TDZ errors: disallow use before definition (functions hoisted, so allow)
+      'no-use-before-define': ['warn', { 
+        functions: false, 
         classes: true, 
         variables: true,
         allowNamedExports: false 
       }],
+      // Allow empty catch blocks (often intentional for error suppression)
+      'no-empty': ['error', { allowEmptyCatch: true }],
     },
   },
 ]

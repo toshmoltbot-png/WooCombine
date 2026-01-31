@@ -193,13 +193,11 @@ export function AuthProvider({ children }) {
         tokenVersion = firebaseUser.stsTokenManager.expirationTime;
         tokenSource = 'expirationTime';
         
-        // PRODUCTION VERIFICATION: Log token version to confirm it changes on refresh
-        if (process.env.NODE_ENV === 'development' || true) {
-          authLogger.debug('Token version from expirationTime', {
+        // Log token version for debugging (always log during initial rollout)
+        authLogger.debug('Token version from expirationTime', {
             expirationTime: tokenVersion,
             expiresIn: Math.round((tokenVersion - Date.now()) / 1000 / 60) + ' minutes'
           });
-        }
       } 
       // OPTION 2: Parse iat from JWT (may not always be present)
       else {

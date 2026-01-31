@@ -180,15 +180,10 @@ export function withCache(apiFunction, cachePrefix, ttl = 5 * 60 * 1000) {
       return cached;
     }
 
-    // Call API function and cache result
-    try {
-      const result = await apiFunction(...args);
-      dataCache.set(cacheKey, result, ttl);
-      return result;
-    } catch (error) {
-      // Don't cache errors
-      throw error;
-    }
+    // Call API function and cache result (errors propagate without caching)
+    const result = await apiFunction(...args);
+    dataCache.set(cacheKey, result, ttl);
+    return result;
   };
 }
 
