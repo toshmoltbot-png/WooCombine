@@ -422,22 +422,23 @@ def advance_draft(draft):
 
 ## 9. Implementation Phases
 
-### Phase 1: Core Draft (MVP) — 2-3 weeks
-- [ ] Data model & Firestore collections
-- [ ] Draft setup UI (admin)
-- [ ] Basic draft room (make picks, see board)
-- [ ] Real-time sync via Firestore listeners
-- [ ] Snake/linear draft logic
+### Phase 1: Core Draft (MVP) — ✅ COMPLETE (2026-02-02)
+- [x] Data model & Firestore collections
+- [x] Draft setup UI (admin)
+- [x] Basic draft room (make picks, see board)
+- [x] Real-time sync via Firestore listeners
+- [x] Snake/linear draft logic
 
-### Phase 2: Enhanced UX — 1-2 weeks
-- [ ] Coach pre-draft rankings
-- [ ] Pick timer with auto-pick
-- [ ] Draft Board (TV view)
-- [ ] Pick undo (admin)
-- [ ] Mobile-optimized coach view
+### Phase 2: Enhanced UX — ✅ COMPLETE (2026-02-02)
+- [x] Coach pre-draft rankings
+- [x] Pick timer with auto-pick
+- [x] Draft Board (TV view)
+- [x] Pick undo (admin)
+- [x] Mobile-optimized coach view
+- [x] Player photos throughout
 
-### Phase 3: Advanced Features — 2+ weeks
-- [ ] Pre-slotted players
+### Phase 3: Advanced Features — Future
+- [ ] Pre-slotted players (API exists, needs UI)
 - [ ] Trade functionality
 - [ ] Draft history & replay
 - [ ] Export rosters
