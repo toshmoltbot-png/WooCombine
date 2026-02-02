@@ -40,6 +40,9 @@ import ScorecardsPage from "./pages/ScorecardsPage";
 import LiveStandings from "./pages/LiveStandings";
 import EventSharing from "./pages/EventSharing";
 import Analytics from "./pages/Analytics";
+
+// Draft Feature Pages
+import { CreateDraft, DraftSetup, DraftRoom, DraftBoard } from "./pages/Draft";
 import SessionExpiredGate from "./components/SessionExpiredGate";
 import BootGate from "./components/BootGate";
 import { NavigationLogger } from "./hooks/useTrackedNavigate";
@@ -130,6 +133,40 @@ function App() {
                         <TeamFormationPage />
                       </AuthenticatedLayout>
                     </RequireAuth>
+                  } 
+                />
+                
+                {/* DRAFT FEATURE ROUTES */}
+                <Route 
+                  path="/draft/create" 
+                  element={
+                    <RequireAuth skipRoleCheck={true}>
+                      <AuthenticatedLayout>
+                        <CreateDraft />
+                      </AuthenticatedLayout>
+                    </RequireAuth>
+                  } 
+                />
+                <Route 
+                  path="/draft/:draftId/setup" 
+                  element={
+                    <RequireAuth skipRoleCheck={true}>
+                      <DraftSetup />
+                    </RequireAuth>
+                  } 
+                />
+                <Route 
+                  path="/draft/:draftId/live" 
+                  element={
+                    <RequireAuth skipRoleCheck={true}>
+                      <DraftRoom />
+                    </RequireAuth>
+                  } 
+                />
+                <Route 
+                  path="/draft/:draftId/board" 
+                  element={
+                    <DraftBoard />
                   } 
                 />
                 <Route 
