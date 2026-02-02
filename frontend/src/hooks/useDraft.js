@@ -11,7 +11,7 @@ import {
   where, 
   orderBy 
 } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { db } from '../firebase';
 import api from '../lib/api';
 
 /**
@@ -301,12 +301,26 @@ export function useDraftActions(draftId) {
     }
   }, [draftId]);
 
+  const autoPick = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.post(`/drafts/${draftId}/picks/auto`);
+      return res.data;
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, [draftId]);
+
   return {
     makePick,
     startDraft,
     pauseDraft,
     resumeDraft,
     undoPick,
+    autoPick,
     loading,
     error
   };

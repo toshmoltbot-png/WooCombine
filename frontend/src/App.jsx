@@ -42,7 +42,7 @@ import EventSharing from "./pages/EventSharing";
 import Analytics from "./pages/Analytics";
 
 // Draft Feature Pages
-import { CreateDraft, DraftSetup, DraftRoom, DraftBoard } from "./pages/Draft";
+import { CreateDraft, DraftSetup, DraftRoom, DraftBoard, CoachRankings } from "./pages/Draft";
 import SessionExpiredGate from "./components/SessionExpiredGate";
 import BootGate from "./components/BootGate";
 import { NavigationLogger } from "./hooks/useTrackedNavigate";
@@ -167,6 +167,14 @@ function App() {
                   path="/draft/:draftId/board" 
                   element={
                     <DraftBoard />
+                  } 
+                />
+                <Route 
+                  path="/draft/:draftId/rankings" 
+                  element={
+                    <RequireAuth skipRoleCheck={true}>
+                      <CoachRankings />
+                    </RequireAuth>
                   } 
                 />
                 <Route 

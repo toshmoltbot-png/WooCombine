@@ -367,13 +367,30 @@ const DraftSetup = () => {
 
         </div>
 
+        {/* Coach Preparation */}
+        <div className="mt-8 bg-yellow-50 border border-yellow-200 rounded-xl p-6">
+          <h3 className="font-semibold text-yellow-900 mb-2">📋 Coach Preparation</h3>
+          <p className="text-sm text-yellow-800 mb-4">
+            Before the draft starts, coaches can create their personal player rankings. 
+            These rankings are private and help during the draft.
+            {settings.auto_pick_on_timeout && ' Rankings are also used for auto-pick if the timer runs out.'}
+          </p>
+          <Link
+            to={`/draft/${draftId}/rankings`}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 text-sm font-medium"
+          >
+            Create My Rankings →
+          </Link>
+        </div>
+
         {/* Info Panel */}
-        <div className="mt-8 bg-blue-50 border border-blue-200 rounded-xl p-6">
+        <div className="mt-6 bg-blue-50 border border-blue-200 rounded-xl p-6">
           <h3 className="font-semibold text-blue-900 mb-2">Ready to draft?</h3>
           <ul className="text-sm text-blue-800 space-y-1">
             <li>✓ Add at least 2 teams</li>
             <li>✓ Assign coaches to teams (optional)</li>
             <li>✓ Set your draft type and timer preferences</li>
+            <li>✓ Coaches create their rankings (recommended)</li>
             <li>✓ Click "Start Draft" when ready</li>
           </ul>
           <p className="text-xs text-blue-600 mt-3">

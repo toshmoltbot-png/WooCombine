@@ -585,6 +585,154 @@ async def list_picks(draft_id: str, user: dict = Depends(get_current_user)):
     picks = [p.to_dict() for p in picks_query]
     return picks
 
+@router.post("/{draft_id}/picks/auto")
+async def auto_pick(draft_id: str, user: dict = Depends(get_current_user)):
+    """
+    Trigger auto-pick for the current team if timer has expired.
+    Uses coach's rankings if available, otherwise uses composite score.
+    Can be called by anyone (timer validation happens server-side).
+    """
+    db = get_firestore_client()
+    
+    draft_ref = db.collection("drafts").document(draft_id)
+    draft_doc = draft_ref.get()
+    
+    if not draft_doc.exists:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    
+    draft_data = draft_doc.to_dict()
+    
+    if draft_data.get("status") != "active":
+        raise HTTPException(status_code=400, detail="Draft is not active")
+    
+    if not draft_data.get("auto_pick_on_timeout"):
+        raise HTTPException(status_code=400, detail="Auto-pick is disabled for this draft")
+    
+    # Check if timer has actually expired
+    pick_deadline = draft_data.get("pick_deadline")
+    if pick_deadline:
+        deadline_dt = datetime.fromisoformat(pick_deadline.replace('Z', '+00:00'))
+        if datetime.now(timezone.utc) < deadline_dt:
+            raise HTTPException(status_code=400, detail="Timer has not expired yet")
+    
+    current_team_id = draft_data.get("current_team_id")
+    
+    # Get coach's rankings for this team
+    team_doc = db.collection("draft_teams").document(current_team_id).get()
+    if not team_doc.exists:
+        raise HTTPException(status_code=500, detail="Current team not found")
+    
+    team_data = team_doc.to_dict()
+    coach_user_id = team_data.get("coach_user_id")
+    
+    # Try to get coach rankings
+    ranked_player_ids = []
+    if coach_user_id:
+        ranking_query = db.collection("coach_rankings").where(
+            filter=FieldFilter("draft_id", "==", draft_id)
+        ).where(
+            filter=FieldFilter("coach_user_id", "==", coach_user_id)
+        ).limit(1).stream()
+        
+        rankings = list(ranking_query)
+        if rankings:
+            ranked_player_ids = rankings[0].to_dict().get("ranked_player_ids", [])
+    
+    # Get available players
+    event_id = draft_data.get("event_id")
+    age_group = draft_data.get("age_group")
+    
+    players_query = db.collection("players").where(filter=FieldFilter("event_id", "==", event_id))
+    if age_group:
+        players_query = players_query.where(filter=FieldFilter("age_group", "==", age_group))
+    
+    all_players = {p.id: p.to_dict() for p in players_query.stream()}
+    
+    # Get already drafted players
+    picks_query = db.collection("draft_picks").where(filter=FieldFilter("draft_id", "==", draft_id)).stream()
+    drafted_ids = {p.to_dict().get("player_id") for p in picks_query}
+    
+    # Filter to available players
+    available_ids = [pid for pid in all_players.keys() if pid not in drafted_ids]
+    
+    if not available_ids:
+        raise HTTPException(status_code=400, detail="No players available")
+    
+    # Select best available player
+    selected_player_id = None
+    
+    # First, try coach rankings
+    for pid in ranked_player_ids:
+        if pid in available_ids:
+            selected_player_id = pid
+            break
+    
+    # Fallback to highest composite score
+    if not selected_player_id:
+        available_players = [(pid, all_players[pid]) for pid in available_ids]
+        available_players.sort(
+            key=lambda x: x[1].get("composite_score") or x[1].get("scores", {}).get("composite", 0) or 0,
+            reverse=True
+        )
+        selected_player_id = available_players[0][0]
+    
+    # Record the pick
+    current_round = draft_data.get("current_round", 1)
+    overall_pick = draft_data.get("current_pick", 1)
+    num_teams = draft_data.get("num_teams", 1)
+    
+    pick_id = generate_id("pick_")
+    pick_data = {
+        "id": pick_id,
+        "draft_id": draft_id,
+        "round": current_round,
+        "pick_number": overall_pick,
+        "team_id": current_team_id,
+        "player_id": selected_player_id,
+        "picked_by": "system",
+        "pick_type": "auto",
+        "created_at": now_iso()
+    }
+    
+    db.collection("draft_picks").document(pick_id).set(pick_data)
+    
+    # Advance draft state
+    next_pick = overall_pick + 1
+    total_picks = draft_data.get("num_rounds", 1) * num_teams
+    
+    if next_pick > total_picks:
+        # Draft complete
+        draft_ref.update({
+            "status": "completed",
+            "completed_at": now_iso(),
+            "current_pick": overall_pick,
+            "pick_deadline": None
+        })
+        await _create_team_rosters(db, draft_id, draft_data)
+        logger.info(f"Draft completed via auto-pick: {draft_id}")
+    else:
+        # Advance to next pick
+        next_round = ((next_pick - 1) // num_teams) + 1
+        next_team_id = get_pick_team(draft_data, next_pick)
+        
+        pick_deadline = None
+        if draft_data.get("pick_timer_seconds", 0) > 0:
+            pick_deadline = (datetime.now(timezone.utc) + timedelta(seconds=draft_data["pick_timer_seconds"])).isoformat()
+        
+        draft_ref.update({
+            "current_round": next_round,
+            "current_pick": next_pick,
+            "current_team_id": next_team_id,
+            "pick_deadline": pick_deadline
+        })
+    
+    logger.info(f"Auto-pick made: {pick_id} - Player {selected_player_id} to team {current_team_id}")
+    
+    return {
+        **pick_data,
+        "player_name": all_players.get(selected_player_id, {}).get("name", "Unknown")
+    }
+
 @router.post("/{draft_id}/picks/undo")
 async def undo_last_pick(draft_id: str, user: dict = Depends(get_current_user)):
     """Undo the last pick. Admin only."""
