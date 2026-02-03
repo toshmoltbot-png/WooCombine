@@ -3,6 +3,7 @@ services:
   - type: web
     runtime: static
     name: tosh-woo-combine-frontend
+    plan: free
     buildCommand: cd frontend && npm install && npm run build
     staticPublishPath: frontend/dist
     routes:
@@ -28,7 +29,8 @@ services:
   # Tosh's Staging Backend
   - type: web
     name: tosh-woo-combine-backend
-    env: python
+    runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: "uvicorn backend.main:app --host 0.0.0.0 --port 10000"
     healthCheckPath: "/health"
