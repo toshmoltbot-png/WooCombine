@@ -193,6 +193,7 @@ export function EventProvider({ children }) {
       setSelectedEvent(null);
       localStorage.removeItem('selectedEvent');
       setNoLeague(true);
+      setEventsLoaded(true); // CRITICAL: Mark as loaded when no league to prevent infinite loading
     }
   }, [selectedLeagueId, authChecked, roleChecked, loadEvents]);
 
