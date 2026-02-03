@@ -1,8 +1,9 @@
 services:
-  # Frontend Static Site
+  # Tosh's Staging Frontend
   - type: web
     runtime: static
-    name: woo-combine-frontend
+    name: tosh-woo-combine-frontend
+    plan: free
     buildCommand: cd frontend && npm install && npm run build
     staticPublishPath: frontend/dist
     routes:
@@ -11,132 +12,39 @@ services:
         destination: /index.html
     envVars:
       - key: VITE_API_BASE
-        value: https://woo-combine-backend.onrender.com/api
+        value: https://tosh-woo-combine-backend.onrender.com/api
       - key: VITE_LOG_LEVEL
-        value: INFO
-      # Sentry (per environment: set in dashboard)
-      - key: VITE_SENTRY_DSN
-        sync: false
-      - key: VITE_SENTRY_ENVIRONMENT
-        sync: false
-      - key: VITE_SENTRY_TRACES_SAMPLE_RATE
-        value: "0.2"
-      - key: VITE_SENTRY_REPLAY_SESSION_SAMPLE_RATE
-        value: "0.0"
-      - key: VITE_SENTRY_REPLAY_ERROR_SAMPLE_RATE
-        value: "1.0"
-      - key: VITE_RELEASE
-        sync: false
-      - key: VITE_GIT_COMMIT
-        sync: false
-      # Firebase Web SDK config (set per-environment in Render dashboard)
+        value: DEBUG
       - key: VITE_FIREBASE_API_KEY
-        sync: false
+        value: AIzaSyAi9I08E3pPdH9vNvpfUowZwcabYXfEhX8
       - key: VITE_FIREBASE_AUTH_DOMAIN
-        sync: false
+        value: tosh-woo-combine.firebaseapp.com
       - key: VITE_FIREBASE_PROJECT_ID
-        sync: false
+        value: tosh-woo-combine
       - key: VITE_FIREBASE_STORAGE_BUCKET
-        sync: false
+        value: tosh-woo-combine.firebasestorage.app
       - key: VITE_FIREBASE_APP_ID
-        sync: false
+        value: "1:730265348365:web:13d1349de9d1a381eb6844"
 
-  # Backend API Service
-  #
-  # ⚠️ CRITICAL SCALING TRIPWIRE ⚠️
-  # 
-  # IF YOU ARE CONSIDERING AUTOSCALING OR INCREASING REPLICAS:
-  # 
-  # The event deletion system currently uses IN-MEMORY token tracking.
-  # This ONLY provides replay protection on SINGLE-INSTANCE deployments.
-  #
-  # BEFORE enabling autoscaling or setting numInstances > 1:
-  # 1. You MUST implement Redis-backed token store
-  # 2. See: docs/reports/MULTI_INSTANCE_TOKEN_STORE.md
-  # 3. Set REDIS_HOST, REDIS_PORT, REDIS_PASSWORD env vars
-  # 4. Verify startup logs show: "Multi-instance replay protection enabled"
-  #
-  # WITHOUT Redis: Token replay attacks WILL succeed across instances.
-  # This bypasses the one-time-use deletion guarantee.
-  #
-  # Current safe configuration: numInstances: 1 (single instance)
-  # If you change this, you MUST address the above requirements first.
-  #
+  # Tosh's Staging Backend
   - type: web
-    name: woo-combine-backend
-    env: python
+    name: tosh-woo-combine-backend
+    runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: "uvicorn backend.main:app --host 0.0.0.0 --port 10000"
     healthCheckPath: "/health"
-    # numInstances: 1  # ⚠️ DO NOT INCREASE without Redis migration (see above)
     envVars:
       - key: ALLOWED_ORIGINS
-        value: https://woo-combine.com,https://www.woo-combine.com
+        value: https://tosh-woo-combine-frontend.onrender.com
       - key: LOG_LEVEL
-        value: WARNING
-      - key: ENABLE_DEBUG_ENDPOINTS
-        value: false
-      # Security contact for security.txt
-      - key: SECURITY_CONTACT_EMAIL
-        value: security@woo-combine.com
-      - key: SECURITY_POLICY_URL
-        value: https://woo-combine.com/security
-      - key: ENABLE_ROLE_SIMPLE
-        value: false
-      # Enforce HTTPS redirects at the app level (edge already redirects for static)
-      - key: FORCE_HTTPS
-        value: true
-      # Rate limits (override per environment as needed)
-      - key: RATE_LIMITS_AUTH
-        value: 5/min
-      - key: RATE_LIMITS_READ
-        value: 300/min
-      - key: RATE_LIMITS_WRITE
-        value: 120/min
-      - key: RATE_LIMITS_BULK
-        value: 30/min
-      - key: RATE_LIMITS_HEALTH
-        value: 600/min
+        value: DEBUG
       - key: PYTHON_VERSION
         value: 3.11.11
-      - key: POETRY_VERSION
-        value: 1.7.1
-      # Firebase credentials as environment variables (set these in Render dashboard)
       - key: GOOGLE_CLOUD_PROJECT
-        sync: false
+        value: tosh-woo-combine
       - key: FIREBASE_PROJECT_ID
-        sync: false
+        value: tosh-woo-combine
+      # Service account JSON - will be set in Render dashboard
       - key: GOOGLE_APPLICATION_CREDENTIALS_JSON
         sync: false
-      # Optional Firebase Auth config (set these in Render dashboard if needed)
-      - key: FIREBASE_AUTH_DOMAIN
-        sync: false
-      - key: FIREBASE_API_KEY
-        sync: false 
-      # Sentry Backend (per environment: set in dashboard)
-      - key: BACKEND_SENTRY_DSN
-        sync: false
-      - key: SENTRY_ENVIRONMENT
-        sync: false
-      - key: SENTRY_TRACES_SAMPLE_RATE
-        value: "0.2"
-      - key: SENTRY_PROFILES_SAMPLE_RATE
-        value: "0.0"
-      - key: RELEASE
-        sync: false
-      - key: GIT_COMMIT
-        sync: false
-      # CSP rollout: start in Report-Only, enforce after validation
-      - key: CSP_REPORT_ONLY
-        value: true
-      # Event deletion token system (REQUIRED for production)
-      # Generate: python -c "import secrets; print(secrets.token_urlsafe(32))"
-      - key: DELETE_TOKEN_SECRET_KEY
-        sync: false
-      # Redis for multi-instance token store (REQUIRED if numInstances > 1)
-      # - key: REDIS_HOST
-      #   sync: false
-      # - key: REDIS_PORT
-      #   value: "6379"
-      # - key: REDIS_PASSWORD
-      #   sync: false
