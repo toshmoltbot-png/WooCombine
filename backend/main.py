@@ -78,9 +78,10 @@ if not allowed_origins:
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ]
-    # Also allow production domain by default via regex if env not provided
+    # Also allow production domains by default via regex if env not provided
     if not allowed_origin_regex:
-        allowed_origin_regex = r"^https://(www\.)?woo-combine\.com$"
+        # Match: woo-combine.com, tosh-woo-combine.web.app, tosh-woo-combine.firebaseapp.com
+        allowed_origin_regex = r"^https://((www\.)?woo-combine\.com|tosh-woo-combine\.(web\.app|firebaseapp\.com))$"
 
 logging.info(f"[CORS] allowed_origins={allowed_origins}")
 if allowed_origin_regex:
