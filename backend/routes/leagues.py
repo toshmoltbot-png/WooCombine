@@ -37,6 +37,7 @@ def generate_join_code(length: int = 6) -> str:
     return ''.join(secrets.choice(chars) for _ in range(length))
 
 
+@router.get("/leagues/me", response_model=List[LeagueResponse], dependencies=[Depends(read_rate_limit)])
 @router.get("/leagues", response_model=List[LeagueResponse], dependencies=[Depends(read_rate_limit)])
 async def list_leagues(user=Depends(get_current_user)):
     """List all leagues the current user is a member of."""
