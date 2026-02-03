@@ -38,6 +38,16 @@ try:
             except Exception as e:
                 logging.warning(f"[AUTH] Failed to parse JSON credentials: {e}")
                 cred = None
+        # Try file path (for Render secret files)
+        if cred is None and creds_path:
+            try:
+                logging.info(f"[AUTH] Attempting to load credentials from file: {creds_path}")
+                cred = credentials.Certificate(creds_path)
+                logging.info("[AUTH] Using credentials from file path")
+            except Exception as e:
+                logging.warning(f"[AUTH] Failed to load from file path: {e}")
+                cred = None
+        # Fallback to Application Default Credentials
         if cred is None:
             try:
                 logging.info("[AUTH] Attempting Application Default Credentials")
