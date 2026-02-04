@@ -138,6 +138,10 @@ function App() {
                 
                 {/* DRAFT FEATURE ROUTES */}
                 <Route 
+                  path="/draft" 
+                  element={<Navigate to="/draft/create" replace />} 
+                />
+                <Route 
                   path="/draft/create" 
                   element={
                     <RequireAuth skipRoleCheck={true}>

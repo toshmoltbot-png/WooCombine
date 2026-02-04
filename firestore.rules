@@ -1,11 +1,45 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Deny all read/write access from client SDKs
-    // All access must go through the backend API (Admin SDK)
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function to check if user is a member of the league
+    function isLeagueMember(leagueId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/leagues/$(leagueId)/members/$(request.auth.uid));
+    }
+    
+    // Draft collections - allow authenticated users with league membership
+    match /leagues/{leagueId}/drafts/{draftId} {
+      allow read: if isLeagueMember(leagueId);
+      allow write: if isLeagueMember(leagueId);
+      
+      // Draft picks subcollection
+      match /picks/{pickId} {
+        allow read: if isLeagueMember(leagueId);
+        allow write: if isLeagueMember(leagueId);
+      }
+      
+      // Draft teams subcollection
+      match /teams/{teamId} {
+        allow read: if isLeagueMember(leagueId);
+        allow write: if isLeagueMember(leagueId);
+      }
+      
+      // Coach rankings subcollection
+      match /rankings/{rankingId} {
+        allow read: if isLeagueMember(leagueId);
+        allow write: if isLeagueMember(leagueId);
+      }
+    }
+    
+    // Default: deny all other client SDK access
+    // All other access must go through the backend API (Admin SDK)
     match /{document=**} {
       allow read, write: if false;
     }
   }
 }
-
