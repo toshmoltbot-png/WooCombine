@@ -247,9 +247,10 @@ api.interceptors.request.use(async (config) => {
     } catch (authError) {
       apiLogger.warn('Failed to get auth token', authError);
     }
-  } else {
-    markSessionStale();
   }
+  // REMOVED: markSessionStale() call here was causing false "Session Expired" modals
+  // during page navigation when auth.currentUser is temporarily null due to race conditions.
+  // Session staleness is now only marked when we get actual 401 responses from the server.
   
   // Return the config for the current request
   return config;

@@ -361,7 +361,8 @@ export default function Navigation() {
           <div className="flex-1 flex justify-start min-w-0 mr-2 relative">
             <button
               onClick={handleEventDropdownClick}
-              className="flex items-center gap-1 px-2 py-2 rounded-lg hover:bg-gray-50 transition min-w-0 max-w-full"
+              className="flex items-center gap-1 px-2 py-2 rounded-lg hover:bg-gray-50 transition min-w-0 max-w-xs md:max-w-sm lg:max-w-md"
+              title={selectedEvent?.name || 'Select Event'}
             >
               <div className="text-left min-w-0 flex-1">
                 <div className="font-bold text-sm md:text-lg text-gray-900 truncate">

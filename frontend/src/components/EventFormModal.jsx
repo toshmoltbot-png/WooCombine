@@ -50,6 +50,9 @@ export default function EventFormModal({ open, onClose, mode = "create", event =
   const [drillTemplate, setDrillTemplate] = useState(mode === "edit" && event ? event.drillTemplate || "football" : templates[0]?.id || "football");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  
+  // Validation state for inline error messages
+  const [validationErrors, setValidationErrors] = useState({});
 
   // DEBUG: Log date state changes (remove after fixing)
   useEffect(() => {
@@ -59,8 +62,34 @@ export default function EventFormModal({ open, onClose, mode = "create", event =
 
   if (!open) return null;
 
+  // Validate form and return true if valid
+  const validateForm = () => {
+    const errors = {};
+    
+    if (!name.trim()) {
+      errors.name = "Event name is required";
+    }
+    
+    if (!date) {
+      errors.date = "Event date is required";
+    }
+    
+    if (!drillTemplate) {
+      errors.drillTemplate = "Sport template is required";
+    }
+    
+    setValidationErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    // Run validation first
+    if (!validateForm()) {
+      return;
+    }
+    
     setLoading(true);
     setError("");
     
@@ -181,18 +210,33 @@ export default function EventFormModal({ open, onClose, mode = "create", event =
           <input
             type="text"
             value={name}
-            onChange={e => setName(e.target.value)}
-            className="w-full border border-brand-primary/20 rounded px-3 py-2 mb-4 focus:ring-2 focus:ring-brand-primary/30 focus:border-brand-primary"
-            required
+            onChange={e => {
+              setName(e.target.value);
+              if (validationErrors.name) {
+                setValidationErrors(prev => ({ ...prev, name: null }));
+              }
+            }}
+            className={`w-full border rounded px-3 py-2 focus:ring-2 focus:ring-brand-primary/30 focus:border-brand-primary ${
+              validationErrors.name ? 'border-red-500 mb-1' : 'border-brand-primary/20 mb-4'
+            }`}
           />
+          {validationErrors.name && (
+            <p className="text-red-500 text-sm mb-3">{validationErrors.name}</p>
+          )}
           
           {/* Sport Template */}
           <label className="block mb-2 font-semibold">Sport Template</label>
           <select
             value={drillTemplate}
-            onChange={e => setDrillTemplate(e.target.value)}
-            className="w-full border border-brand-primary/20 rounded px-3 py-2 mb-4 focus:ring-2 focus:ring-brand-primary/30 focus:border-brand-primary"
-            required
+            onChange={e => {
+              setDrillTemplate(e.target.value);
+              if (validationErrors.drillTemplate) {
+                setValidationErrors(prev => ({ ...prev, drillTemplate: null }));
+              }
+            }}
+            className={`w-full border rounded px-3 py-2 focus:ring-2 focus:ring-brand-primary/30 focus:border-brand-primary ${
+              validationErrors.drillTemplate ? 'border-red-500 mb-1' : 'border-brand-primary/20 mb-4'
+            }`}
           >
             {templates.map(template => (
               <option key={template.id} value={template.id}>
@@ -200,6 +244,9 @@ export default function EventFormModal({ open, onClose, mode = "create", event =
               </option>
             ))}
           </select>
+          {validationErrors.drillTemplate && (
+            <p className="text-red-500 text-sm mb-3">{validationErrors.drillTemplate}</p>
+          )}
 
           {/* Event Date */}
           <label className="block mb-2 font-semibold">Event Date</label>
@@ -209,13 +256,20 @@ export default function EventFormModal({ open, onClose, mode = "create", event =
             onChange={e => {
               console.log('[EventFormModal] Date onChange fired. New value:', e.target.value);
               setDate(e.target.value);
+              if (validationErrors.date) {
+                setValidationErrors(prev => ({ ...prev, date: null }));
+              }
             }}
             onInput={e => {
               console.log('[EventFormModal] Date onInput fired. New value:', e.target.value);
             }}
-            className="w-full border border-brand-primary/20 rounded px-3 py-2 mb-4 focus:ring-2 focus:ring-brand-primary/30 focus:border-brand-primary"
-            required
+            className={`w-full border rounded px-3 py-2 focus:ring-2 focus:ring-brand-primary/30 focus:border-brand-primary ${
+              validationErrors.date ? 'border-red-500 mb-1' : 'border-brand-primary/20 mb-4'
+            }`}
           />
+          {validationErrors.date && (
+            <p className="text-red-500 text-sm mb-3">{validationErrors.date}</p>
+          )}
           
           {/* Location */}
           <label className="block mb-2 font-semibold">Location</label>
